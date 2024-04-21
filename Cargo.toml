@@ -5,3 +5,19 @@ authors = ["Dante Helmore <frostu8@protonmail.com>"]
 edition = "2021"
 
 [dependencies]
+bevy = { version = "0.13.2", default-features = false, features = [
+  "animation", 
+  "bevy_asset", 
+  "bevy_gilrs",
+  "bevy_winit",
+  "bevy_core_pipeline",
+  "bevy_render",
+  "bevy_sprite",
+  "dynamic_linking",
+  "multi-threaded",
+  "png",
+  "x11",
+  "webgl2",
+] }
+cpal = "0.15.3"
+lewton = "0.10.2"
