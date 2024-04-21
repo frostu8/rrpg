@@ -4,7 +4,7 @@ use bevy::prelude::*;
 
 use std::time::Duration;
 
-use crate::audio::AudioDevice;
+use crate::audio::AudioControl;
 
 /// Rhythm plugin.
 pub struct RhythmPlugin;
@@ -15,6 +15,13 @@ impl Plugin for RhythmPlugin {
             .add_systems(PreUpdate, update_rhythm_clock);
     }
 }
+
+/// The main track.
+///
+/// This is an [`AudioBundle`](crate::audio::AudioBundle) that the [`Rhythm`]
+/// clock will base its timings off of.
+#[derive(Clone, Copy, Component, Default, Debug)]
+pub struct MainTrack;
 
 /// The rhythm clock, a more high level abstraction over rhythm timings.
 ///
@@ -81,16 +88,18 @@ impl RhythmExt for Time<Rhythm> {
 }
 
 fn update_rhythm_clock(
-    audio_device: NonSend<AudioDevice>,
+    main_track: Query<&AudioControl, With<MainTrack>>,
     time: Res<Time<Real>>,
     mut rhythm: ResMut<Time<Rhythm>>,
 ) {
-    if let Some(timestamp) = audio_device.try_timestamp() {
+    if let Ok(ctl) = main_track.get_single() {
+        let timestamp = ctl.timestamp();
+
         let elapsed = rhythm.elapsed();
         let rhythm_ctx = rhythm.context_mut();
 
         // get next timestamp
-        rhythm_ctx.timestamp = audio_device.sample_duration() * timestamp as u32;
+        rhythm_ctx.timestamp = ctl.sample_duration() * timestamp as u32;
 
         // progress clock to timestamp but do not overstep
         let next_elapsed = elapsed + time.delta();

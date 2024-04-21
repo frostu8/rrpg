@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 
-use rrpg::rhythm::RhythmExt;
+use rrpg::audio::AudioBundle;
+use rrpg::rhythm::{MainTrack, RhythmExt};
 use rrpg::RrpgPlugins;
 
 fn main() {
@@ -12,10 +13,16 @@ fn main() {
         .run();
 }
 
-fn setup(asset_server: Res<AssetServer>, mut next: ResMut<rrpg::audio::NextTrack>) {
+fn setup(asset_server: Res<AssetServer>, mut commands: Commands) {
     let song = asset_server.load("song/the_shadows.ogg");
 
-    next.set(song);
+    commands.spawn((
+        AudioBundle {
+            source: song,
+            ..Default::default()
+        },
+        MainTrack,
+    ));
 }
 
 fn update(

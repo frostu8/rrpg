@@ -39,41 +39,72 @@ impl Plugin for AudioPlugin {
             .init_asset::<AudioSource>()
             .init_asset_loader::<AudioLoader>()
             .init_non_send_resource::<AudioDevice>()
-            .init_resource::<NextTrack>()
             .add_systems(PreUpdate, send_sound_events)
-            .add_systems(Update, start_next_track)
+            .add_systems(Update, start_spawned_audio)
             .add_systems(Startup, setup_sound_device);
     }
 }
 
-/// Queues the next song to play on the audio device.
+/// A bundle for playing audio.
 ///
-/// When the song begins playing, an event will be fired (TBD).
-#[derive(Default, Resource)]
-pub struct NextTrack(Option<Handle<AudioSource>>);
+/// When this is spawned, the audio will immediately begin playing.
+#[derive(Bundle, Default)]
+pub struct AudioBundle {
+    pub source: Handle<AudioSource>,
+    pub actl: AudioControl,
+}
 
-impl NextTrack {
-    /// Sets the next track.
-    pub fn set(&mut self, next: Handle<AudioSource>) {
-        self.0 = Some(next);
+/// A component for audio source control.
+///
+/// # Note
+/// The buffer for `cpal` on most platforms (including WASM, the platform this
+/// game will ship on!) is quite large. Controlling audio may have delays of
+/// multiple frames, and the [`AudioControl::timestamp`] function may record
+/// large jumps in timestamp.
+#[derive(Clone, Component)]
+pub struct AudioControl {
+    inner: Arc<AudioControlState>,
+}
+
+impl AudioControl {
+    /// Returns the duration for each sample.
+    pub fn sample_duration(&self) -> Duration {
+        Duration::from_nanos(NANOS_PER_SAMPLE)
+    }
+
+    /// Returns the timestamp of the audio in samples.
+    pub fn timestamp(&self) -> u64 {
+        self.inner.timestamp.load(Ordering::Acquire)
     }
 }
 
-/// Has useful low-level sound primitives.
+impl Default for AudioControl {
+    /// Creates an unheaded `AudioControl`.
+    fn default() -> Self {
+        AudioControl {
+            inner: Arc::new(AudioControlState {
+                timestamp: AtomicU64::new(0),
+            }),
+        }
+    }
+}
+
+struct AudioControlState {
+    timestamp: AtomicU64,
+}
+
+/// Marker component for loaded audio.
+#[derive(Clone, Copy, Component, Debug, Default)]
+pub struct LoadedAudio;
+
 #[derive(Default)]
-pub struct AudioDevice {
+struct AudioDevice {
     state: Option<AudioState>,
 }
 
 struct AudioState {
     _stream: Stream,
-    inner: Arc<AudioStateInner>,
-    song_queue: Sender<Decoder>,
-}
-
-struct AudioStateInner {
-    timestamp: AtomicU64,
-    started: AtomicBool,
+    audio_queue: Sender<(Decoder, Arc<AudioControlState>)>,
 }
 
 impl AudioDevice {
@@ -100,17 +131,13 @@ impl AudioDevice {
 
         let config = supported_config.into();
 
-        let (song_queue_tx, song_queue_rx) = channel();
-        let inner = Arc::new(AudioStateInner {
-            timestamp: AtomicU64::new(0),
-            started: AtomicBool::new(false),
-        });
+        let (audio_queue_tx, audio_queue_rx) = channel();
 
         // build audio decoder thread
         let stream = device
             .build_output_stream(
                 &config,
-                audio_streamer(inner.clone(), song_queue_rx),
+                audio_streamer(audio_queue_rx),
                 move |err| {
                     error!("stream error: {}", err);
                 },
@@ -126,8 +153,7 @@ impl AudioDevice {
             Ok(stream) => {
                 self.state = Some(AudioState {
                     _stream: stream,
-                    inner,
-                    song_queue: song_queue_tx,
+                    audio_queue: audio_queue_tx,
                 });
 
                 Ok(())
@@ -136,16 +162,13 @@ impl AudioDevice {
         }
     }
 
-    /// Plays audio on song priority.
-    ///
-    /// This resets timings! The timings of [`Rhythm`] should also be reset so
-    /// these don't get messed up.
-    fn play(&self, song: AudioSource) -> Result<(), lewton::VorbisError> {
+    /// Plays audio.
+    fn play(&self, audio: AudioSource, ctl: &AudioControl) -> Result<(), lewton::VorbisError> {
         if let Some(state) = &self.state {
-            // get decoder
-            let decoder = Decoder::new(song)?;
+            // create decoder and state
+            let decoder = Decoder::new(audio)?;
             // send song over
-            let _ = state.song_queue.send(decoder);
+            let _ = state.audio_queue.send((decoder, ctl.inner.clone()));
         }
 
         Ok(())
@@ -154,35 +177,6 @@ impl AudioDevice {
     fn state(&self) -> Option<&AudioState> {
         self.state.as_ref()
     }
-
-    /// Gets the sample rate of the audio.
-    ///
-    /// For now, always `44_100`.
-    pub fn sample_rate(&self) -> u64 {
-        SAMPLE_RATE as u64
-    }
-
-    /// Returns the duration of each sample.
-    pub fn sample_duration(&self) -> Duration {
-        Duration::from_nanos(NANOS_PER_SAMPLE)
-    }
-
-    /// Gets the timestamp of the currently playing track in samples.
-    ///
-    /// This says nothing about the duration of the stream, rather, it says
-    /// how long the main track (enqueued using [`NextTrack`]) has been
-    /// playing.
-    pub fn timestamp(&self) -> u64 {
-        self.try_timestamp().expect("init audio device")
-    }
-
-    /// Gets the timestamp of the currently playing track, or `None` if there
-    /// is no initialized audio stream.
-    pub fn try_timestamp(&self) -> Option<u64> {
-        self.state
-            .as_ref()
-            .map(|s| s.inner.timestamp.load(Ordering::Acquire))
-    }
 }
 
 /// An event sent when the track starts.
@@ -190,36 +184,38 @@ impl AudioDevice {
 pub struct TrackStart;
 
 fn audio_streamer(
-    inner: Arc<AudioStateInner>,
-    song_queue: Receiver<Decoder>,
+    audio_queue: Receiver<(Decoder, Arc<AudioControlState>)>,
 ) -> impl FnMut(&mut [i16], &cpal::OutputCallbackInfo) + Send + 'static {
-    let mut source: Option<Decoder> = None;
+    let mut source: Option<(Decoder, Arc<AudioControlState>)> = None;
 
     move |data, _| {
-        let mut set_started = false;
-
-        if let Ok(decoder) = song_queue.try_recv() {
+        if let Ok((decoder, actl)) = audio_queue.try_recv() {
             let (ident, _, _) = decoder.headers();
 
             info!(
                 "got track, c = {}, sample_rate = {}",
                 ident.audio_channels, ident.audio_sample_rate
             );
-            // load source onto player
-            source = Some(decoder);
             // reset timestamp
-            inner.timestamp.store(0, Ordering::Release);
-            set_started = true;
+            actl.timestamp.store(0, Ordering::Release);
+            // load source onto player
+            source = Some((decoder, actl));
         }
 
-        let mix_len = if let Some(decoder) = &mut source {
-            match decoder.sample_all(data) {
+        let mix_len = if let Some((decoder, actl)) = &mut source {
+            let mix_len = match decoder.sample_all(data) {
                 Ok(len) => len,
                 Err(err) => {
                     error!("stream dropped: {}", err);
                     0
                 }
-            }
+            };
+
+            // count mix len as samples
+            let samples = mix_len as u64 / CHANNEL_COUNT as u64;
+            actl.timestamp.fetch_add(samples, Ordering::AcqRel);
+
+            mix_len
         } else {
             0
         };
@@ -228,47 +224,30 @@ fn audio_streamer(
         for i in mix_len..data.len() {
             data[i] = Sample::EQUILIBRIUM;
         }
-
-        // count samples requested to produce accumulated time
-        let samples = mix_len as u64 / CHANNEL_COUNT as u64;
-        inner.timestamp.fetch_add(samples, Ordering::AcqRel);
-
-        if set_started {
-            inner.started.store(true, Ordering::Release);
-        }
     }
 }
 
 fn send_sound_events(
-    audio_device: NonSendMut<AudioDevice>,
-    mut track_start_tx: EventWriter<TrackStart>,
+    _audio_device: NonSendMut<AudioDevice>,
+    mut _track_start_tx: EventWriter<TrackStart>,
 ) {
-    // gets started flag
-    if let Some(state) = audio_device.state() {
-        if state.inner.started.load(Ordering::Acquire) {
-            // clear started bit
-            state.inner.started.store(false, Ordering::Release);
-
-            // send event
-            track_start_tx.send(TrackStart);
-        }
-    }
+    // TODO: impl
 }
 
-fn start_next_track(
-    audio_device: NonSendMut<AudioDevice>,
-    mut next_track: ResMut<NextTrack>,
+fn start_spawned_audio(
+    query: Query<(Entity, &Handle<AudioSource>, &AudioControl), Without<LoadedAudio>>,
     audio_sources: Res<Assets<AudioSource>>,
+    audio_device: NonSendMut<AudioDevice>,
+    mut commands: Commands,
 ) {
-    if let Some(next) = &next_track.0 {
-        // try and get data
-        if let Some(track) = audio_sources.get(next) {
-            // load track into audio device
-            if let Err(err) = audio_device.play(track.clone()) {
-                error!("failed to play track: {}", err);
+    for (entity, audio_source, actl) in query.iter() {
+        if let Some(audio_source) = audio_sources.get(audio_source) {
+            // start playing sound
+            if let Err(err) = audio_device.play(audio_source.clone(), actl) {
+                error!("Failed to play audio: {}", err);
             }
 
-            next_track.0 = None;
+            commands.entity(entity).insert(LoadedAudio);
         }
     }
 }
