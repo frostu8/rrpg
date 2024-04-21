@@ -55,7 +55,8 @@ impl AsRef<[u8]> for AudioSource {
 
 /// A decoder for an audio asset.
 ///
-/// Samples from decoders are 44100 sample rate, 2 channels interleaved.
+/// Samples from decoders are 44100 sample rate, 2 channels interleaved. This
+/// is meant to be run on the mixer thread and is thus not exposed.
 pub struct Decoder {
     buffer: Vec<i16>,
     stream: OggStreamReader<Cursor<AudioSource>>,

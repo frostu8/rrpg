@@ -9,7 +9,7 @@ use bevy::prelude::*;
 
 use std::{
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{channel, Receiver, Sender},
         Arc,
     },
@@ -18,8 +18,7 @@ use std::{
 
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
-    BufferSize, Device, Sample, SampleFormat, SampleRate, Stream, StreamConfig,
-    SupportedBufferSize,
+    Device, Sample, SampleFormat, SampleRate, Stream,
 };
 
 /// The default controlled sample rate.
@@ -36,12 +35,12 @@ pub struct AudioPlugin;
 
 impl Plugin for AudioPlugin {
     fn build(&self, app: &mut App) {
-        app.init_asset::<AudioSource>()
+        app.add_event::<TrackStart>()
+            .init_asset::<AudioSource>()
             .init_asset_loader::<AudioLoader>()
             .init_non_send_resource::<AudioDevice>()
-            .insert_resource(Time::new_with(Rhythm::default()))
             .init_resource::<NextTrack>()
-            .add_systems(PreUpdate, update_rhythm_clock)
+            .add_systems(PreUpdate, send_sound_events)
             .add_systems(Update, start_next_track)
             .add_systems(Startup, setup_sound_device);
     }
@@ -62,22 +61,26 @@ impl NextTrack {
 
 /// Has useful low-level sound primitives.
 #[derive(Default)]
-struct AudioDevice {
+pub struct AudioDevice {
     state: Option<AudioState>,
 }
 
 struct AudioState {
-    device: Device,
-    stream: Stream,
-    timestamp: Arc<AtomicU64>,
+    _stream: Stream,
+    inner: Arc<AudioStateInner>,
     song_queue: Sender<Decoder>,
+}
+
+struct AudioStateInner {
+    timestamp: AtomicU64,
+    started: AtomicBool,
 }
 
 impl AudioDevice {
     /// Initializes a cpal [`Device`] on this audio device.
-    pub fn init(&mut self, device: Device) -> Result<(), String> {
+    fn init(&mut self, device: Device) -> Result<(), String> {
         // find configs
-        let mut supported_configs_range = match device.supported_output_configs() {
+        let supported_configs_range = match device.supported_output_configs() {
             Ok(s) => s,
             Err(err) => return Err(format!("no configs found: {}", err)),
         };
@@ -98,13 +101,16 @@ impl AudioDevice {
         let config = supported_config.into();
 
         let (song_queue_tx, song_queue_rx) = channel();
-        let timestamp = Arc::new(AtomicU64::new(0));
+        let inner = Arc::new(AudioStateInner {
+            timestamp: AtomicU64::new(0),
+            started: AtomicBool::new(false),
+        });
 
         // build audio decoder thread
         let stream = device
             .build_output_stream(
                 &config,
-                audio_streamer(timestamp.clone(), song_queue_rx),
+                audio_streamer(inner.clone(), song_queue_rx),
                 move |err| {
                     error!("stream error: {}", err);
                 },
@@ -119,9 +125,8 @@ impl AudioDevice {
         match stream {
             Ok(stream) => {
                 self.state = Some(AudioState {
-                    device,
-                    stream,
-                    timestamp,
+                    _stream: stream,
+                    inner,
                     song_queue: song_queue_tx,
                 });
 
@@ -135,7 +140,7 @@ impl AudioDevice {
     ///
     /// This resets timings! The timings of [`Rhythm`] should also be reset so
     /// these don't get messed up.
-    pub fn play(&self, song: AudioSource) -> Result<(), lewton::VorbisError> {
+    fn play(&self, song: AudioSource) -> Result<(), lewton::VorbisError> {
         if let Some(state) = &self.state {
             // get decoder
             let decoder = Decoder::new(song)?;
@@ -146,21 +151,53 @@ impl AudioDevice {
         Ok(())
     }
 
-    /// Gets the timestamp of the audio device.
-    pub fn timestamp(&self) -> Option<u64> {
+    fn state(&self) -> Option<&AudioState> {
+        self.state.as_ref()
+    }
+
+    /// Gets the sample rate of the audio.
+    ///
+    /// For now, always `44_100`.
+    pub fn sample_rate(&self) -> u64 {
+        SAMPLE_RATE as u64
+    }
+
+    /// Returns the duration of each sample.
+    pub fn sample_duration(&self) -> Duration {
+        Duration::from_nanos(NANOS_PER_SAMPLE)
+    }
+
+    /// Gets the timestamp of the currently playing track in samples.
+    ///
+    /// This says nothing about the duration of the stream, rather, it says
+    /// how long the main track (enqueued using [`NextTrack`]) has been
+    /// playing.
+    pub fn timestamp(&self) -> u64 {
+        self.try_timestamp().expect("init audio device")
+    }
+
+    /// Gets the timestamp of the currently playing track, or `None` if there
+    /// is no initialized audio stream.
+    pub fn try_timestamp(&self) -> Option<u64> {
         self.state
             .as_ref()
-            .map(|s| s.timestamp.load(Ordering::Acquire))
+            .map(|s| s.inner.timestamp.load(Ordering::Acquire))
     }
 }
 
+/// An event sent when the track starts.
+#[derive(Clone, Debug, Event)]
+pub struct TrackStart;
+
 fn audio_streamer(
-    timestamp: Arc<AtomicU64>,
+    inner: Arc<AudioStateInner>,
     song_queue: Receiver<Decoder>,
 ) -> impl FnMut(&mut [i16], &cpal::OutputCallbackInfo) + Send + 'static {
     let mut source: Option<Decoder> = None;
 
     move |data, _| {
+        let mut set_started = false;
+
         if let Ok(decoder) = song_queue.try_recv() {
             let (ident, _, _) = decoder.headers();
 
@@ -171,7 +208,8 @@ fn audio_streamer(
             // load source onto player
             source = Some(decoder);
             // reset timestamp
-            timestamp.store(0, Ordering::Release);
+            inner.timestamp.store(0, Ordering::Release);
+            set_started = true;
         }
 
         let mix_len = if let Some(decoder) = &mut source {
@@ -193,80 +231,27 @@ fn audio_streamer(
 
         // count samples requested to produce accumulated time
         let samples = mix_len as u64 / CHANNEL_COUNT as u64;
-        timestamp.fetch_add(samples, Ordering::AcqRel);
-    }
-}
+        inner.timestamp.fetch_add(samples, Ordering::AcqRel);
 
-/// The rhythm clock, a more high level abstraction over rhythm timings.
-///
-/// Can be accessed through the [`Time`] resource. For accessor and mutator
-/// methods, see [`RhythmExt`].
-///
-/// The rhythm clock runs independent of the actual battle logic frequency,
-/// which is typically around 60hz. In an ideal world, the rhythm clock will
-/// run at the same pace at all times, but because of latency and time drift,
-/// the pace of the rhythm clock will have to be adjusted.
-#[derive(Clone)]
-pub struct Rhythm {
-    crochet: Duration,
-    timestamp: Duration,
-    offset: Duration,
-}
-
-impl Default for Rhythm {
-    fn default() -> Self {
-        Rhythm {
-            crochet: Duration::from_nanos(1_000_000_000 * 60 / 170),
-            timestamp: Duration::ZERO,
-            offset: Duration::from_millis(570),
+        if set_started {
+            inner.started.store(true, Ordering::Release);
         }
     }
 }
 
-/// Rhythm extension methods.
-pub trait RhythmExt {
-    /// The timestamp of the song, starting from `offset`>
-    fn timestamp(&self) -> Duration;
-
-    /// The beat number that the song is on.
-    fn beat_number(&self) -> u32;
-}
-
-impl RhythmExt for Time<Rhythm> {
-    fn timestamp(&self) -> Duration {
-        let ctx = self.context();
-
-        if let Some(timestamp) = ctx.timestamp.checked_sub(ctx.offset) {
-            timestamp
-        } else {
-            Duration::ZERO
-        }
-    }
-
-    fn beat_number(&self) -> u32 {
-        let ctx = self.context();
-
-        self.timestamp().div_duration_f64(ctx.crochet) as u32
-    }
-}
-
-fn update_rhythm_clock(
-    audio_device: NonSend<AudioDevice>,
-    time: Res<Time<Real>>,
-    mut rhythm: ResMut<Time<Rhythm>>,
+fn send_sound_events(
+    audio_device: NonSendMut<AudioDevice>,
+    mut track_start_tx: EventWriter<TrackStart>,
 ) {
-    if let Some(timestamp) = audio_device.timestamp() {
-        let elapsed = rhythm.elapsed();
-        let rhythm_ctx = rhythm.context_mut();
+    // gets started flag
+    if let Some(state) = audio_device.state() {
+        if state.inner.started.load(Ordering::Acquire) {
+            // clear started bit
+            state.inner.started.store(false, Ordering::Release);
 
-        // get next timestamp
-        rhythm_ctx.timestamp = Duration::from_nanos(NANOS_PER_SAMPLE * timestamp);
-
-        // progress clock to timestamp but do not overstep
-        let next_elapsed = elapsed + time.delta();
-        let new_time = std::cmp::min(next_elapsed, rhythm.timestamp());
-
-        rhythm.advance_to(new_time);
+            // send event
+            track_start_tx.send(TrackStart);
+        }
     }
 }
 

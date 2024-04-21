@@ -3,6 +3,7 @@
 #![feature(div_duration)]
 
 pub mod audio;
+pub mod rhythm;
 pub mod state;
 
 use bevy::app::{PluginGroup, PluginGroupBuilder};
@@ -16,5 +17,6 @@ impl PluginGroup for RrpgPlugins {
         PluginGroupBuilder::start::<Self>()
             .add(state::GameStatePlugin)
             .add(audio::AudioPlugin)
+            .add(rhythm::RhythmPlugin)
     }
 }
