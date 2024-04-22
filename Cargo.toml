@@ -21,3 +21,5 @@ bevy = { version = "0.13.2", default-features = false, features = [
 ] }
 cpal = "0.15.3"
 lewton = "0.10.2"
+ron = "0.8.1"
+serde = { version = "1.0.198", features = ["derive"] }

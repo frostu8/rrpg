@@ -1,0 +1,7 @@
+(
+    song: BeatmapSong(
+        path: "song/the_shadows.ogg",
+        bpm: 170,
+        offset: 670,
+    ),
+)

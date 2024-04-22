@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use rrpg::audio::AudioBundle;
+use rrpg::rhythm::BeatmapBundle;
 use rrpg::rhythm::{MainTrack, RhythmExt};
 use rrpg::RrpgPlugins;
 
@@ -14,15 +14,9 @@ fn main() {
 }
 
 fn setup(asset_server: Res<AssetServer>, mut commands: Commands) {
-    let song = asset_server.load("song/the_shadows.ogg");
+    let beatmap = asset_server.load("beatmap/the_shadows.ron");
 
-    commands.spawn((
-        AudioBundle {
-            source: song,
-            ..Default::default()
-        },
-        MainTrack,
-    ));
+    commands.spawn(BeatmapBundle::new(beatmap));
 }
 
 fn update(

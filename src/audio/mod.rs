@@ -203,7 +203,7 @@ fn audio_streamer(
         }
 
         let mix_len = if let Some((decoder, actl)) = &mut source {
-            let mix_len = match decoder.sample_all(data) {
+            let mix_len = match decoder.sample(data) {
                 Ok(len) => len,
                 Err(err) => {
                     error!("stream dropped: {}", err);

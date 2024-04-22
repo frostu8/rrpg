@@ -59,6 +59,7 @@ impl AsRef<[u8]> for AudioSource {
 /// is meant to be run on the mixer thread and is thus not exposed.
 pub struct Decoder {
     buffer: Vec<i16>,
+    buffer_cursor: usize,
     stream: OggStreamReader<Cursor<AudioSource>>,
 }
 
@@ -68,6 +69,7 @@ impl Decoder {
         OggStreamReader::new(Cursor::new(source)).map(|stream| Decoder {
             stream,
             buffer: Vec::new(),
+            buffer_cursor: 0,
         })
     }
 
@@ -75,57 +77,40 @@ impl Decoder {
     ///
     /// The `usize` returned is how many samples were read, or `0` if EOF was
     /// reached.
-    pub fn sample_all(&mut self, buf: &mut [i16]) -> Result<usize, lewton::VorbisError> {
+    pub fn sample(&mut self, buf: &mut [i16]) -> Result<usize, lewton::VorbisError> {
         let mut cursor = 0;
 
         while cursor < buf.len() {
-            match self.sample(&mut buf[cursor..]) {
-                Ok(0) => break,
-                Ok(len) => cursor += len,
-                Err(err) => return Err(err),
+            if self.remaining() > 0 {
+                // copy from buffer
+                let remaining = self.remaining();
+                let len = std::cmp::min(remaining, buf.len() - cursor);
+
+                (&mut buf[cursor..(len + cursor)])
+                    .copy_from_slice(&self.buffer[self.buffer_cursor..(self.buffer_cursor + len)]);
+
+                // advance buffer cursor
+                self.buffer_cursor += len;
+
+                cursor += len;
+            } else {
+                // try to read more data
+                match self.stream.read_dec_packet_itl()? {
+                    Some(data) => {
+                        // reinit buffer
+                        self.buffer = data;
+                        self.buffer_cursor = 0;
+                    }
+                    None => break,
+                }
             }
         }
 
         Ok(cursor)
     }
 
-    /// Reads in some samples.
-    pub fn sample(&mut self, buf: &mut [i16]) -> Result<usize, lewton::VorbisError> {
-        if self.buffer.len() > 0 {
-            // copy from buffer first
-            let len = std::cmp::min(self.buffer.len(), buf.len());
-
-            (&mut buf[..len]).copy_from_slice(&self.buffer[..len]);
-
-            // remove older data
-            let mut new_buf = (0..(self.buffer.len() - len))
-                .map(|_| 0)
-                .collect::<Vec<i16>>();
-            (&mut new_buf[..]).copy_from_slice(&self.buffer[len..]);
-            self.buffer = new_buf;
-
-            return Ok(len);
-        }
-
-        // get next packet from stream
-        match self.stream.read_dec_packet_itl() {
-            Ok(Some(data)) => {
-                // we got some data, write it to the buffer
-                if data.len() > buf.len() {
-                    // write everything up to data
-                    buf.copy_from_slice(&data[..buf.len()]);
-                    // copy rest into buffer
-                    self.buffer = Vec::from(&data[buf.len()..]);
-                    Ok(buf.len())
-                } else {
-                    // copy everything
-                    (&mut buf[..data.len()]).copy_from_slice(&data);
-                    Ok(data.len())
-                }
-            }
-            Ok(None) => Ok(0),
-            Err(err) => Err(err),
-        }
+    fn remaining(&self) -> usize {
+        self.buffer.len() - self.buffer_cursor
     }
 
     /// Returns header information.

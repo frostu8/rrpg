@@ -1,20 +1,54 @@
 //! Higher level rhythm tracking.
 
+pub mod asset;
+
 use bevy::prelude::*;
 
 use std::time::Duration;
 
-use crate::audio::AudioControl;
+use crate::audio::{AudioControl, AudioSource};
+
+use asset::{Beatmap, BeatmapLoader};
 
 /// Rhythm plugin.
 pub struct RhythmPlugin;
 
 impl Plugin for RhythmPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(Time::new_with(Rhythm::default()))
-            .add_systems(PreUpdate, update_rhythm_clock);
+        app.init_asset::<Beatmap>()
+            .register_asset_loader(BeatmapLoader::default())
+            .insert_resource(Time::new_with(Rhythm::default()))
+            .add_systems(PreUpdate, (spawn_beatmap, update_rhythm_clock));
     }
 }
+
+/// Loads a beatmap in.
+///
+/// This bundle includes [`MainTrack`] as a component. Remember to clean this
+/// up after the song is concluded!
+#[derive(Bundle, Default)]
+pub struct BeatmapBundle {
+    beatmap: Handle<Beatmap>,
+    audio_source: Handle<AudioSource>,
+    audio_control: AudioControl,
+    main_track: MainTrack,
+}
+
+impl BeatmapBundle {
+    /// Creates a new `BeatmapBundle`.
+    pub fn new(beatmap: Handle<Beatmap>) -> BeatmapBundle {
+        BeatmapBundle {
+            beatmap,
+            ..Default::default()
+        }
+    }
+}
+
+/// An instanced beatmap.
+///
+/// This component is inserted when all the notes are finished spawning.
+#[derive(Clone, Copy, Component, Default, Debug)]
+pub struct BeatmapInstance;
 
 /// The main track.
 ///
@@ -34,18 +68,29 @@ pub struct MainTrack;
 /// the pace of the rhythm clock will have to be adjusted.
 #[derive(Clone)]
 pub struct Rhythm {
-    crochet: Duration,
-    timestamp: Duration,
+    bpm: u32,
+    crotchet: Duration,
     offset: Duration,
+
+    timestamp: Duration,
+}
+
+impl Rhythm {
+    /// Initializes a rhythm clock with settings.
+    pub fn new(bpm: u32, offset: Duration) -> Rhythm {
+        Rhythm {
+            bpm,
+            crotchet: Duration::from_nanos(1_000_000_000 * 60 / bpm as u64),
+            offset,
+
+            timestamp: Duration::ZERO,
+        }
+    }
 }
 
 impl Default for Rhythm {
     fn default() -> Self {
-        Rhythm {
-            crochet: Duration::from_nanos(1_000_000_000 * 60 / 170),
-            timestamp: Duration::ZERO,
-            offset: Duration::from_millis(670),
-        }
+        Rhythm::new(60, Duration::from_millis(0))
     }
 }
 
@@ -81,9 +126,39 @@ impl RhythmExt for Time<Rhythm> {
         let timestamp = timestamp - ctx.offset.as_secs_f32();
 
         // get crochet
-        let crochet = ctx.crochet.as_secs_f32();
+        let crochet = ctx.crotchet.as_secs_f32();
 
         timestamp / crochet
+    }
+}
+
+fn spawn_beatmap(
+    mut new_beatmaps: Query<
+        (Entity, &Handle<Beatmap>, &mut Handle<AudioSource>),
+        Without<BeatmapInstance>,
+    >,
+    beatmaps: Res<Assets<Beatmap>>,
+    mut rhythm: ResMut<Time<Rhythm>>,
+    mut commands: Commands,
+) {
+    for (entity, beatmap_handle, mut audio_handle) in new_beatmaps.iter_mut() {
+        if let Some(beatmap) = beatmaps.get(beatmap_handle) {
+            // update audio handle
+            *audio_handle = beatmap.song.handle.clone();
+
+            // create new rhythm clock
+            *rhythm = Time::new_with(Rhythm::new(beatmap.song.bpm, beatmap.song.offset()));
+
+            // TODO: spawn notes
+
+            // instance beatmap
+            commands.entity(entity).insert(BeatmapInstance);
+
+            info!(
+                "spawned beatmap (song: \"{}\")",
+                beatmap.song.path.display()
+            );
+        }
     }
 }
 

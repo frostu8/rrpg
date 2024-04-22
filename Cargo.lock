@@ -2743,6 +2743,8 @@ dependencies = [
  "bevy",
  "cpal",
  "lewton",
+ "ron",
+ "serde",
 ]
 
 [[package]]
