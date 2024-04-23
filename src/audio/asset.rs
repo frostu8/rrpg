@@ -86,7 +86,7 @@ impl Decoder {
                 let remaining = self.remaining();
                 let len = std::cmp::min(remaining, buf.len() - cursor);
 
-                (&mut buf[cursor..(len + cursor)])
+                buf[cursor..(len + cursor)]
                     .copy_from_slice(&self.buffer[self.buffer_cursor..(self.buffer_cursor + len)]);
 
                 // advance buffer cursor

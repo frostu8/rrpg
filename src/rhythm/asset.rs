@@ -6,6 +6,7 @@ use bevy::utils::BoxedFuture;
 
 use serde::{Deserialize, Serialize};
 
+use std::cmp::Ordering;
 use std::fmt::{self, Display, Formatter};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -37,6 +38,10 @@ impl AssetLoader for BeatmapLoader {
             // load song
             let handle = load_context.load::<AudioSource>(data.song.path.clone());
             data.song.handle = handle;
+
+            // sort notes
+            data.notes
+                .sort_unstable_by(|a, b| a.partial_cmp(b).expect("got NaN as beat for note"));
 
             Ok(data)
         })
@@ -87,8 +92,24 @@ impl std::error::Error for BeatmapLoadError {
 /// A beatmap asset.
 #[derive(Asset, Clone, Debug, Default, Deserialize, Serialize, TypePath)]
 pub struct Beatmap {
+    /// Lane count.
+    ///
+    /// This is used to initialize the lanes without having to scan through
+    /// the entire ron.
+    pub lane_count: u32,
     /// Song definitions.
     pub song: BeatmapSong,
+    notes: Vec<BeatmapNote>,
+}
+
+impl Beatmap {
+    /// The actual beatmap, a-la where all the notes are placed.
+    ///
+    /// The notes returned are sorted by the beat they start on. To modify
+    /// notes, one must use the [`Beatmap::change`] function.
+    pub fn notes(&self) -> &[BeatmapNote] {
+        &self.notes
+    }
 }
 
 /// A beatmap's song definition.
@@ -109,5 +130,52 @@ impl BeatmapSong {
     /// Returns `offset` as a [`Duration`].
     pub fn offset(&self) -> Duration {
         Duration::from_millis(self.offset.into())
+    }
+}
+
+/// A single placement of a note.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct BeatmapNote {
+    beat: f32,
+    #[serde(default)]
+    end_beat: Option<f32>,
+    /// What lane the note appears in.
+    pub lane: u32,
+}
+
+impl BeatmapNote {
+    /// Where the note actually occurs in the song according to BPM.
+    ///
+    /// # Warning!
+    /// It is an invariant for this to be `NaN`. There's nothing really that
+    /// enforces that, but bad times will happen if this is `NaN`. Do not set
+    /// this as `NaN` in your beatmaps and **REALLY** do not set this
+    /// programmatically or everything will be terrible.
+    ///
+    /// This field and [`BeatmapNote::end_beat`] are hidden to preserve the
+    /// invariants of [`Beatmap::notes`] (everything is sorted), so it's
+    /// really hard to mess with this programmatically. The only way to get a
+    /// `NaN` in here is through editing the beatmap file, but the loader
+    /// thread will just crash and nothing catastrophic will happen.
+    pub fn beat(&self) -> f32 {
+        self.beat
+    }
+
+    /// `None` if the note is a single (tap) note. If the note is a slider,
+    /// this will be `Some(x)` where `x` is the end beat.
+    pub fn end_beat(&self) -> Option<f32> {
+        self.end_beat
+    }
+}
+
+impl PartialEq for BeatmapNote {
+    fn eq(&self, other: &Self) -> bool {
+        self.beat.eq(&other.beat)
+    }
+}
+
+impl PartialOrd for BeatmapNote {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.beat.partial_cmp(&other.beat)
     }
 }

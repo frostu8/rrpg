@@ -9,7 +9,7 @@ use bevy::prelude::*;
 
 use std::{
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
         mpsc::{channel, Receiver, Sender},
         Arc,
     },
@@ -109,6 +109,7 @@ struct AudioState {
 
 impl AudioDevice {
     /// Initializes a cpal [`Device`] on this audio device.
+    #[allow(clippy::filter_next)] // disable lint for readability
     fn init(&mut self, device: Device) -> Result<(), String> {
         // find configs
         let supported_configs_range = match device.supported_output_configs() {
@@ -173,10 +174,6 @@ impl AudioDevice {
 
         Ok(())
     }
-
-    fn state(&self) -> Option<&AudioState> {
-        self.state.as_ref()
-    }
 }
 
 /// An event sent when the track starts.
@@ -221,8 +218,8 @@ fn audio_streamer(
         };
 
         // fill the rest with silence
-        for i in mix_len..data.len() {
-            data[i] = Sample::EQUILIBRIUM;
+        for data in data.iter_mut().skip(mix_len) {
+            *data = Sample::EQUILIBRIUM;
         }
     }
 }

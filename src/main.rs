@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 
 use rrpg::rhythm::BeatmapBundle;
-use rrpg::rhythm::{MainTrack, RhythmExt};
+use rrpg::rhythm::RhythmExt;
 use rrpg::RrpgPlugins;
 
 fn main() {

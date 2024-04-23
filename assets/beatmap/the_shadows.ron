@@ -1,7 +1,12 @@
 (
+    lane_count: 4,
     song: BeatmapSong(
         path: "song/the_shadows.ogg",
         bpm: 170,
         offset: 670,
     ),
+    notes: [
+        (beat: 12.0, lane: 1),
+        (beat: 24.0, lane: 1),
+    ]
 )

@@ -1,6 +1,7 @@
 //! Buddy Holly (weezer).
 
 #![feature(div_duration)]
+#![allow(clippy::type_complexity)]
 
 pub mod audio;
 pub mod rhythm;

@@ -16,7 +16,7 @@ pub struct RhythmPlugin;
 impl Plugin for RhythmPlugin {
     fn build(&self, app: &mut App) {
         app.init_asset::<Beatmap>()
-            .register_asset_loader(BeatmapLoader::default())
+            .register_asset_loader(BeatmapLoader)
             .insert_resource(Time::new_with(Rhythm::default()))
             .add_systems(PreUpdate, (spawn_beatmap, update_rhythm_clock));
     }
@@ -85,6 +85,21 @@ impl Rhythm {
 
             timestamp: Duration::ZERO,
         }
+    }
+
+    /// Returns the BPM of the current song.
+    pub fn bpm(&self) -> u32 {
+        self.bpm
+    }
+
+    /// Returns the crotchet (the time between beats) of the current song.
+    pub fn crotchet(&self) -> Duration {
+        self.crotchet
+    }
+
+    /// Returns the start offset of the current song.
+    pub fn offset(&self) -> Duration {
+        self.offset
     }
 }
 
