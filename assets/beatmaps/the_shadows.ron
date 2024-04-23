@@ -1,0 +1,20 @@
+(
+    lane_count: 4,
+    song: BeatmapSong(
+        path: "songs/the_shadows.ogg",
+        bpm: 170,
+        //offset: 670,
+        //offset: 350,
+        offset: 630,
+    ),
+    notes: [
+        (beat: 12.0, lane: 0),
+        (beat: 24.0, lane: 1),
+        (beat: 36.0, lane: 2),
+        (beat: 48.0, lane: 3),
+        (beat: 60.0, lane: 0),
+        (beat: 72.0, lane: 1),
+        (beat: 84.0, lane: 2),
+        (beat: 96.0, lane: 3),
+    ]
+)

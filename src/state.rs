@@ -1,13 +1,19 @@
-//! Global game state structures.
+//! Global game state structures and loading systems.
 
 use bevy::prelude::*;
+use bevy_asset_loader::prelude::*;
 
 /// Plugin to add game state.
+///
+/// This also adds systems responsible for loading. Make sure you install
+/// this plugin if anything!
 pub struct GameStatePlugin;
 
 impl Plugin for GameStatePlugin {
     fn build(&self, app: &mut App) {
-        app.init_state::<GameState>();
+        app.init_state::<GameState>().add_loading_state(
+            LoadingState::new(GameState::LoadingBattle).continue_to_state(GameState::InBattle),
+        );
     }
 }
 
@@ -20,7 +26,9 @@ pub enum GameState {
     #[default]
     Splash,
     /// Asset loading.
-    Loading,
+    ///
+    /// Will transition to [`GameState::InBattle`] after this is concluded.
+    LoadingBattle,
     /// In battle.
     InBattle,
 }

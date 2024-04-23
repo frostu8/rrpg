@@ -1,14 +1,26 @@
 //! Higher level rhythm tracking.
 
 pub mod asset;
+pub mod note;
 
 use bevy::prelude::*;
+use bevy::transform::TransformSystem;
+
+use bevy_asset_loader::prelude::*;
 
 use std::time::Duration;
 
-use crate::audio::{AudioControl, AudioSource};
+use crate::{
+    audio::{AudioControl, AudioSource},
+    GameState,
+};
 
 use asset::{Beatmap, BeatmapLoader};
+
+use note::{Lane, LaneBundle, Note};
+
+/// The width of a single note.
+pub const NOTE_WIDTH: f32 = 16.;
 
 /// Rhythm plugin.
 pub struct RhythmPlugin;
@@ -18,8 +30,30 @@ impl Plugin for RhythmPlugin {
         app.init_asset::<Beatmap>()
             .register_asset_loader(BeatmapLoader)
             .insert_resource(Time::new_with(Rhythm::default()))
-            .add_systems(PreUpdate, (spawn_beatmap, update_rhythm_clock));
+            .configure_loading_state(
+                LoadingStateConfig::new(GameState::LoadingBattle).load_collection::<ImageAssets>(),
+            )
+            .add_systems(
+                PreUpdate,
+                (
+                    spawn_beatmap.run_if(in_state(GameState::InBattle)),
+                    interpolate_rhythm_clock,
+                ),
+            )
+            .add_systems(
+                PostUpdate,
+                (note::reorder_notes, note::update_note_transform)
+                    .chain()
+                    .before(TransformSystem::TransformPropagate),
+            );
     }
+}
+
+/// Sprite assets for the rhythm-game UI.
+#[derive(AssetCollection, Resource)]
+pub struct ImageAssets {
+    #[asset(path = "sprites/note_default.png")]
+    pub note_default: Handle<Image>,
 }
 
 /// Loads a beatmap in.
@@ -28,10 +62,15 @@ impl Plugin for RhythmPlugin {
 /// up after the song is concluded!
 #[derive(Bundle, Default)]
 pub struct BeatmapBundle {
-    beatmap: Handle<Beatmap>,
-    audio_source: Handle<AudioSource>,
-    audio_control: AudioControl,
-    main_track: MainTrack,
+    pub global_transform: GlobalTransform,
+    pub transform: Transform,
+    pub visibility: Visibility,
+    pub view_visibility: ViewVisibility,
+    pub inherited_visibility: InheritedVisibility,
+    pub beatmap: Handle<Beatmap>,
+    pub audio_source: Handle<AudioSource>,
+    pub audio_control: AudioControl,
+    pub main_track: MainTrack,
 }
 
 impl BeatmapBundle {
@@ -73,6 +112,8 @@ pub struct Rhythm {
     offset: Duration,
 
     timestamp: Duration,
+    started_at: Duration,
+    is_interpolating: bool,
 }
 
 impl Rhythm {
@@ -84,6 +125,8 @@ impl Rhythm {
             offset,
 
             timestamp: Duration::ZERO,
+            started_at: Duration::ZERO,
+            is_interpolating: false,
         }
     }
 
@@ -111,7 +154,7 @@ impl Default for Rhythm {
 
 /// Rhythm extension methods.
 pub trait RhythmExt {
-    /// The timestamp of the song, starting from `offset`>
+    /// The timestamp of the song, starting from `offset`.
     fn timestamp(&self) -> Duration;
 
     /// The beat number that the song is on.
@@ -126,7 +169,7 @@ impl RhythmExt for Time<Rhythm> {
     fn timestamp(&self) -> Duration {
         let ctx = self.context();
 
-        if let Some(timestamp) = ctx.timestamp.checked_sub(ctx.offset) {
+        if let Some(timestamp) = self.elapsed().checked_sub(ctx.offset) {
             timestamp
         } else {
             Duration::ZERO
@@ -134,11 +177,11 @@ impl RhythmExt for Time<Rhythm> {
     }
 
     fn beat_number(&self) -> f32 {
+        let elapsed = self.elapsed().as_secs_f32();
         let ctx = self.context();
 
         // get timestamp
-        let timestamp = ctx.timestamp.as_secs_f32();
-        let timestamp = timestamp - ctx.offset.as_secs_f32();
+        let timestamp = elapsed - ctx.offset.as_secs_f32();
 
         // get crochet
         let crochet = ctx.crotchet.as_secs_f32();
@@ -153,6 +196,7 @@ fn spawn_beatmap(
         Without<BeatmapInstance>,
     >,
     beatmaps: Res<Assets<Beatmap>>,
+    image_assets: Res<ImageAssets>,
     mut rhythm: ResMut<Time<Rhythm>>,
     mut commands: Commands,
 ) {
@@ -164,7 +208,40 @@ fn spawn_beatmap(
             // create new rhythm clock
             *rhythm = Time::new_with(Rhythm::new(beatmap.song.bpm, beatmap.song.offset()));
 
-            // TODO: spawn notes
+            // spawn lanes
+            let first_x = (1. - beatmap.lane_count as f32) * (NOTE_WIDTH / 2.);
+
+            for i in 0..beatmap.lane_count {
+                // find transform
+                let x = first_x + NOTE_WIDTH * (i as f32);
+
+                let transform = Transform::from_xyz(x, 0., 1.);
+
+                // spawn the parent entity
+                commands
+                    .spawn(LaneBundle {
+                        transform,
+                        lane: Lane::new(i),
+                        ..Default::default()
+                    })
+                    .set_parent(entity)
+                    .with_children(|parent| {
+                        // spawn each note in the lane
+                        for note in beatmap.notes().iter().filter(|n| n.lane == i) {
+                            parent.spawn((
+                                SpriteBundle {
+                                    texture: image_assets.note_default.clone(),
+                                    sprite: Sprite {
+                                        color: Color::RED,
+                                        ..Default::default()
+                                    },
+                                    ..Default::default()
+                                },
+                                Note::from(note.clone()),
+                            ));
+                        }
+                    });
+            }
 
             // instance beatmap
             commands.entity(entity).insert(BeatmapInstance);
@@ -177,24 +254,38 @@ fn spawn_beatmap(
     }
 }
 
-fn update_rhythm_clock(
+fn interpolate_rhythm_clock(
     main_track: Query<&AudioControl, With<MainTrack>>,
     time: Res<Time<Real>>,
     mut rhythm: ResMut<Time<Rhythm>>,
 ) {
     if let Ok(ctl) = main_track.get_single() {
-        let timestamp = ctl.timestamp();
-
-        let elapsed = rhythm.elapsed();
+        let mut current_time = rhythm.elapsed().as_secs_f32();
         let rhythm_ctx = rhythm.context_mut();
 
+        let last_timestamp = rhythm_ctx.timestamp;
+
         // get next timestamp
-        rhythm_ctx.timestamp = ctl.sample_duration() * timestamp as u32;
+        rhythm_ctx.timestamp = ctl.sample_duration() * ctl.timestamp() as u32;
 
-        // progress clock to timestamp but do not overstep
-        let next_elapsed = elapsed + time.delta();
-        let new_time = std::cmp::min(next_elapsed, rhythm.timestamp());
+        if rhythm_ctx.is_interpolating {
+            // interpolate time on clock
+            current_time += time.delta_seconds();
 
-        rhythm.advance_to(new_time);
+            // if there is a time difference, adjust for the difference
+            current_time += (rhythm_ctx.timestamp.as_secs_f32() - current_time) / 8.;
+
+            // update new time
+            rhythm.advance_to(Duration::from_secs_f32(current_time));
+        } else {
+            // check if the source has even elapsed
+            if last_timestamp != rhythm_ctx.timestamp {
+                // set interpolation
+                rhythm_ctx.is_interpolating = true;
+            }
+
+            let timestamp = rhythm_ctx.timestamp;
+            rhythm.advance_to(timestamp);
+        }
     }
 }
