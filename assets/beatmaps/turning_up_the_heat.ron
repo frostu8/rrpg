@@ -1,0 +1,28 @@
+(
+    lane_count: 4,
+    song: BeatmapSong(
+        path: "songs/turning_up_the_heat.ogg",
+        bpm: 278,
+        //offset: 670,
+        //offset: 350,
+        offset: 180,
+    ),
+    notes: [
+        (beat: 16.0, lane: 2),
+        (beat: 17.0, lane: 2),
+        (beat: 18.0, lane: 1),
+        (beat: 19.0, lane: 3),
+        (beat: 20.0, lane: 0),
+        (beat: 21.0, lane: 1),
+        (beat: 22.0, lane: 2),
+        (beat: 23.0, lane: 3),
+        (beat: 24.0, lane: 0),
+        (beat: 25.0, lane: 0),
+        (beat: 26.0, lane: 1),
+        (beat: 27.0, lane: 2),
+        (beat: 28.0, lane: 3),
+        (beat: 29.0, lane: 2),
+        (beat: 30.0, lane: 3),
+        (beat: 31.0, lane: 2),
+    ]
+)

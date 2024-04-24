@@ -2,17 +2,21 @@ use bevy::prelude::*;
 use bevy::render::camera::ScalingMode;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 
-use rrpg::rhythm::BeatmapBundle;
-use rrpg::rhythm::RhythmExt;
+use rrpg::rhythm::{BeatmapBundle, JudgementEvent, KeyEvent, RhythmExt, RhythmSystem};
 use rrpg::{GameState, RrpgPlugins};
 
 fn main() {
     App::new()
-        .add_plugins(DefaultPlugins)
+        .add_plugins(DefaultPlugins.set(ImagePlugin::default_nearest()))
         .add_plugins(WorldInspectorPlugin::new())
         .add_plugins(RrpgPlugins)
         .add_systems(Startup, setup)
-        .add_systems(Update, update.run_if(in_state(GameState::InBattle)))
+        .add_systems(
+            Update,
+            (rrpg::rhythm::vanish_passed_notes, update)
+                .after(RhythmSystem::Judgement)
+                .run_if(in_state(GameState::InBattle)),
+        )
         .run();
 }
 
@@ -28,10 +32,11 @@ fn setup(
             far: -1000.,
             ..Default::default()
         },
+        transform: Transform::from_xyz(0., 8. * 10., 0.),
         ..Default::default()
     });
 
-    let beatmap = asset_server.load("beatmaps/the_shadows.ron");
+    let beatmap = asset_server.load("beatmaps/turning_up_the_heat.ron");
 
     commands.spawn(BeatmapBundle::new(beatmap));
 
@@ -40,16 +45,19 @@ fn setup(
 
 fn update(
     time: Res<Time<rrpg::rhythm::Rhythm>>,
-    mut last_bn: Local<i32>,
+    real_time: Res<Time<Real>>,
     mut start_events: EventReader<rrpg::audio::TrackStart>,
+    mut key_events: EventReader<KeyEvent>,
+    mut judgement_events: EventReader<JudgementEvent>,
 ) {
     for _ in start_events.read() {
         info!("track started!");
     }
 
-    let bn = time.beat_number() as i32;
-    if *last_bn != bn {
-        info!("b# = {}", bn);
-        *last_bn = bn;
+    for key in key_events.read() {
+        //info!("gk = {:?}", key);
+    }
+    for je in judgement_events.read() {
+        info!("je = {:?}", je);
     }
 }

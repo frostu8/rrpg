@@ -1,6 +1,7 @@
 //! Higher level rhythm tracking.
 
 pub mod asset;
+pub mod judgement;
 pub mod note;
 
 use bevy::prelude::*;
@@ -12,8 +13,11 @@ use std::time::Duration;
 
 use crate::{
     audio::{AudioControl, AudioSource},
+    rhythm::judgement::LaneInputKeyboard,
     GameState,
 };
+
+pub use self::judgement::{JudgementEvent, KeyEvent};
 
 use asset::{Beatmap, BeatmapLoader};
 
@@ -27,7 +31,9 @@ pub struct RhythmPlugin;
 
 impl Plugin for RhythmPlugin {
     fn build(&self, app: &mut App) {
-        app.init_asset::<Beatmap>()
+        app.add_event::<KeyEvent>()
+            .add_event::<JudgementEvent>()
+            .init_asset::<Beatmap>()
             .register_asset_loader(BeatmapLoader)
             .insert_resource(Time::new_with(Rhythm::default()))
             .configure_loading_state(
@@ -41,17 +47,43 @@ impl Plugin for RhythmPlugin {
                 ),
             )
             .add_systems(
+                PreUpdate,
+                (judgement::create_key_events_keyboard,).in_set(RhythmSystem::Input),
+            )
+            .add_systems(
+                Update,
+                (
+                    judgement::create_judgements,
+                    judgement::create_dropped_judgements,
+                )
+                    .chain()
+                    .in_set(RhythmSystem::Judgement)
+                    .after(RhythmSystem::Input),
+            )
+            .add_systems(
                 PostUpdate,
                 (note::reorder_notes, note::update_note_transform)
                     .chain()
                     .in_set(RhythmSystem::NoteUpdate)
                     .before(TransformSystem::TransformPropagate),
+            )
+            .add_systems(
+                Update,
+                note::create_lane_sprite
+                    .run_if(in_state(GameState::InBattle))
+                    .in_set(RhythmSystem::SpawnSprites),
             );
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, SystemSet)]
 pub enum RhythmSystem {
+    /// Does actual judgements.
+    Judgement,
+    /// Create input events.
+    Input,
+    /// Spawns related sprites.
+    SpawnSprites,
     /// Updates note positions, placements and loading.
     NoteUpdate,
 }
@@ -61,6 +93,12 @@ pub enum RhythmSystem {
 pub struct ImageAssets {
     #[asset(path = "sprites/note_default.png")]
     pub note_default: Handle<Image>,
+    #[asset(path = "sprites/judgement_area.png")]
+    pub judgement_area: Handle<Image>,
+    #[asset(path = "sprites/lane_sheet.png")]
+    pub lane_sheet: Handle<Image>,
+    #[asset(texture_atlas_layout(tile_size_x = 16., tile_size_y = 8., columns = 2, rows = 2))]
+    pub lane_sheet_layout: Handle<TextureAtlasLayout>,
 }
 
 /// Loads a beatmap in.
@@ -92,9 +130,21 @@ impl BeatmapBundle {
 
 /// An instanced beatmap.
 ///
-/// This component is inserted when all the notes are finished spawning.
-#[derive(Clone, Copy, Component, Default, Debug)]
-pub struct BeatmapInstance;
+/// This component is inserted when all the notes are finished spawning. This
+/// component also contains some useful information about the beatmap.
+#[derive(Clone, Copy, Component, Debug)]
+pub struct BeatmapInstance {
+    /// The judgement window.
+    pub note_window: Duration,
+}
+
+impl Default for BeatmapInstance {
+    fn default() -> Self {
+        BeatmapInstance {
+            note_window: Duration::from_millis(150),
+        }
+    }
+}
 
 /// The main track.
 ///
@@ -112,6 +162,11 @@ pub struct MainTrack;
 /// which is typically around 60hz. In an ideal world, the rhythm clock will
 /// run at the same pace at all times, but because of latency and time drift,
 /// the pace of the rhythm clock will have to be adjusted.
+///
+/// # Warning!
+/// Do **not** use [`Time::elapsed`] to get elapsed time since the song starts,
+/// since it does not take into account seeks and rate changes, and is
+/// particularly useless after loading more than one beatmap.
 #[derive(Clone)]
 pub struct Rhythm {
     bpm: u32,
@@ -119,7 +174,8 @@ pub struct Rhythm {
     offset: Duration,
 
     timestamp: Duration,
-    started_at: Duration,
+
+    position: Duration,
     is_interpolating: bool,
 }
 
@@ -132,7 +188,8 @@ impl Rhythm {
             offset,
 
             timestamp: Duration::ZERO,
-            started_at: Duration::ZERO,
+
+            position: Duration::ZERO,
             is_interpolating: false,
         }
     }
@@ -161,8 +218,22 @@ impl Default for Rhythm {
 
 /// Rhythm extension methods.
 pub trait RhythmExt {
+    /// The current position of the song, interpolated by the rhythm clock.
+    fn position(&self) -> Duration;
+
     /// The timestamp of the song, starting from `offset`.
-    fn timestamp(&self) -> Duration;
+    ///
+    /// This returns how much data was processed of the song. This does not
+    /// update smoothly between frames! On most modern systems, this updates
+    /// once every 3 or 4 frames due to audio buffering. For elapsed time since
+    /// the start of the song, use [`RhythmExt::position`].
+    fn dsp_time(&self) -> Duration;
+
+    /// Returns the position of a beat in the song.
+    ///
+    /// # Panics
+    /// Panics if `beat` is negative.
+    fn beat_position(&self, beat: f32) -> Duration;
 
     /// The beat number that the song is on.
     ///
@@ -173,7 +244,11 @@ pub trait RhythmExt {
 }
 
 impl RhythmExt for Time<Rhythm> {
-    fn timestamp(&self) -> Duration {
+    fn position(&self) -> Duration {
+        self.context().position
+    }
+
+    fn dsp_time(&self) -> Duration {
         let ctx = self.context();
 
         if let Some(timestamp) = self.elapsed().checked_sub(ctx.offset) {
@@ -183,8 +258,15 @@ impl RhythmExt for Time<Rhythm> {
         }
     }
 
+    fn beat_position(&self, beat: f32) -> Duration {
+        assert!(beat >= 0.);
+
+        let ctx = self.context();
+        ctx.crotchet.mul_f32(beat) + ctx.offset
+    }
+
     fn beat_number(&self) -> f32 {
-        let elapsed = self.elapsed().as_secs_f32();
+        let elapsed = self.position().as_secs_f32();
         let ctx = self.context();
 
         // get timestamp
@@ -219,6 +301,8 @@ fn spawn_beatmap(
             let first_x = (1. - beatmap.lane_count as f32) * (NOTE_WIDTH / 2.);
 
             for i in 0..beatmap.lane_count {
+                let map = [KeyCode::KeyZ, KeyCode::KeyX, KeyCode::KeyN, KeyCode::KeyM];
+
                 // find transform
                 let x = first_x + NOTE_WIDTH * (i as f32);
 
@@ -226,20 +310,34 @@ fn spawn_beatmap(
 
                 // spawn the parent entity
                 commands
-                    .spawn(LaneBundle {
-                        transform,
-                        lane: Lane::new(i),
-                        ..Default::default()
-                    })
+                    // TODO: input remapping
+                    .spawn((
+                        LaneBundle {
+                            transform,
+                            lane: Lane::new(i),
+                            ..Default::default()
+                        },
+                        LaneInputKeyboard::new(map[i as usize]),
+                    ))
                     .set_parent(entity)
                     .with_children(|parent| {
+                        // spawn judgement area
+                        parent.spawn(SpriteBundle {
+                            texture: image_assets.judgement_area.clone(),
+                            sprite: Sprite {
+                                color: Color::WHITE,
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        });
+
                         // spawn each note in the lane
                         for note in beatmap.notes().iter().filter(|n| n.lane == i) {
                             parent.spawn((
                                 SpriteBundle {
                                     texture: image_assets.note_default.clone(),
                                     sprite: Sprite {
-                                        color: Color::RED,
+                                        color: Color::WHITE,
                                         ..Default::default()
                                     },
                                     ..Default::default()
@@ -251,7 +349,7 @@ fn spawn_beatmap(
             }
 
             // instance beatmap
-            commands.entity(entity).insert(BeatmapInstance);
+            commands.entity(entity).insert(BeatmapInstance::default());
 
             info!(
                 "spawned beatmap (song: \"{}\")",
@@ -270,7 +368,11 @@ fn interpolate_rhythm_clock(
         let mut current_time = rhythm.elapsed().as_secs_f32();
         let rhythm_ctx = rhythm.context_mut();
 
-        let last_timestamp = rhythm_ctx.timestamp;
+        let Rhythm {
+            timestamp: last_timestamp,
+            position: last_position,
+            ..
+        } = *rhythm_ctx;
 
         // get next timestamp
         rhythm_ctx.timestamp = ctl.sample_duration() * ctl.timestamp() as u32;
@@ -283,7 +385,7 @@ fn interpolate_rhythm_clock(
             current_time += (rhythm_ctx.timestamp.as_secs_f32() - current_time) / 8.;
 
             // update new time
-            rhythm.advance_to(Duration::from_secs_f32(current_time));
+            rhythm_ctx.position = Duration::from_secs_f32(current_time);
         } else {
             // check if the source has even elapsed
             if last_timestamp != rhythm_ctx.timestamp {
@@ -291,8 +393,27 @@ fn interpolate_rhythm_clock(
                 rhythm_ctx.is_interpolating = true;
             }
 
-            let timestamp = rhythm_ctx.timestamp;
-            rhythm.advance_to(timestamp);
+            rhythm_ctx.position = rhythm_ctx.timestamp;
+        }
+
+        // if we moved forward, set elapsed time
+        if let Some(delta) = rhythm_ctx.position.checked_sub(last_position) {
+            rhythm.advance_by(delta);
+        }
+    }
+}
+
+/// Makes notes disappear after they have been hit (or missed).
+///
+/// This is not a system that is added automatically, the app composer should
+/// add flair as necessary.
+pub fn vanish_passed_notes(
+    mut judgements: EventReader<JudgementEvent>,
+    mut notes: Query<&mut Visibility>,
+) {
+    for judgement in judgements.read() {
+        if let Ok(mut note) = notes.get_mut(judgement.note) {
+            *note = Visibility::Hidden;
         }
     }
 }

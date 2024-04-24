@@ -7,7 +7,7 @@
 
 use bevy::{prelude::*, utils::HashSet};
 
-use super::{asset::BeatmapNote, Rhythm, RhythmExt};
+use super::{asset::BeatmapNote, ImageAssets, Rhythm, RhythmExt};
 
 /// A lane bundle.
 #[derive(Bundle, Default)]
@@ -26,6 +26,8 @@ pub struct LaneBundle {
 /// this entity, and the `Lane` will automatically manage them.
 #[derive(Clone, Component, Debug, Default)]
 pub struct Lane {
+    sprite_count: usize,
+
     number: u32,
     notes: Vec<Entity>,
     current_note: usize,
@@ -35,11 +37,44 @@ impl Lane {
     /// Creates a new `Lane`.
     pub fn new(number: u32) -> Lane {
         Lane {
+            sprite_count: 30,
             number,
             notes: Vec::with_capacity(512),
             current_note: 0,
         }
     }
+
+    /// Returns the next note, but does not increment the current note.
+    ///
+    /// Returns `None` if at the end of the notes.
+    pub fn next_note(&self) -> Option<Entity> {
+        self.notes.get(self.current_note).copied()
+    }
+
+    /// Returns an iterator of all next notes.
+    pub fn all_next_notes<'a>(&'a self) -> impl Iterator<Item = Entity> + 'a {
+        self.notes.iter().skip(self.current_note).copied()
+    }
+
+    /// Advances to the next note, returning the last current note.
+    ///
+    /// Returns `None` if at the end of the notes.
+    pub fn advance_note(&mut self) -> Option<Entity> {
+        let note = self.next_note();
+        self.current_note += 1;
+        note
+    }
+
+    /// Skips a lot of notes.
+    pub fn skip_notes(&mut self, to_skip: usize) {
+        self.current_note += to_skip;
+    }
+}
+
+/// The container for the lane visuals.
+#[derive(Clone, Component, Debug, Default)]
+pub struct LaneSprite {
+    count: usize,
 }
 
 /// An instantiated note.
@@ -49,6 +84,13 @@ impl Lane {
 pub struct Note {
     inner: BeatmapNote,
     scroll_axis: Vec3,
+}
+
+impl Note {
+    /// Returns the beat this note occurs on.
+    pub fn beat(&self) -> f32 {
+        self.inner.beat()
+    }
 }
 
 impl Default for Note {
@@ -116,5 +158,42 @@ pub fn update_note_transform(mut notes: Query<(&Note, &mut Transform)>, rhythm: 
         let dist = note.inner.beat() - rhythm.beat_number();
 
         transform.translation = note.scroll_axis * dist;
+    }
+}
+
+/// Creates lane visuals.
+pub fn create_lane_sprite(
+    new_lanes: Query<(Entity, &Lane), Added<Lane>>,
+    image_assets: Res<ImageAssets>,
+    mut commands: Commands,
+) {
+    for (entity, lane) in new_lanes.iter() {
+        let count = lane.sprite_count;
+
+        // spawn lane sprite entity
+        let lane_sprite = commands
+            .spawn((SpatialBundle::default(), LaneSprite { count }))
+            .set_parent(entity)
+            .id();
+
+        // spawn all lane sprites
+        for i in 0..count {
+            // TODO: Magic number!!!
+            let y = i as f32 * 8.;
+
+            commands
+                .spawn((
+                    SpriteBundle {
+                        texture: image_assets.lane_sheet.clone(),
+                        transform: Transform::from_xyz(0., y, -5.),
+                        ..Default::default()
+                    },
+                    TextureAtlas {
+                        layout: image_assets.lane_sheet_layout.clone(),
+                        index: i % 4,
+                    },
+                ))
+                .set_parent(lane_sprite);
+        }
     }
 }
