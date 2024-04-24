@@ -44,9 +44,16 @@ impl Plugin for RhythmPlugin {
                 PostUpdate,
                 (note::reorder_notes, note::update_note_transform)
                     .chain()
+                    .in_set(RhythmSystem::NoteUpdate)
                     .before(TransformSystem::TransformPropagate),
             );
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, SystemSet)]
+pub enum RhythmSystem {
+    /// Updates note positions, placements and loading.
+    NoteUpdate,
 }
 
 /// Sprite assets for the rhythm-game UI.
