@@ -34,7 +34,8 @@ impl LaneInputKeyboard {
 pub struct JudgementEvent {
     /// The note that this judgement is for.
     pub note: Entity,
-    /// The offset in seconds.
+    /// The offset in seconds. A positive offset means the note press was too
+    /// early, and a negative means the press was too late.
     ///
     /// If the note was missed, this is `None`.
     pub offset: Option<f32>,
@@ -101,7 +102,7 @@ pub fn create_judgements(
         let note_position = rhythm.beat_position(next_note.beat());
         let input_position = key.timestamp;
 
-        let diff = input_position.as_secs_f32() - note_position.as_secs_f32();
+        let diff = note_position.as_secs_f32() - input_position.as_secs_f32();
 
         let window_max = beatmap.note_window.as_secs_f32();
 
@@ -112,7 +113,6 @@ pub fn create_judgements(
             });
 
             // advance note if it was hit
-            // TODO: check if in window
             lane.advance_note();
         }
 
