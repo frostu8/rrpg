@@ -21,6 +21,7 @@ impl PluginGroup for RrpgPlugins {
             .add(audio::AudioPlugin)
             .add(rhythm::RhythmPlugin)
             .add(rhythm::render::RenderPlugin)
+            .add(rhythm::input::KeyboardInputPlugin)
             .add(effect::EffectPlugin)
     }
 }

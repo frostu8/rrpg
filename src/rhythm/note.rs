@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use bevy::{prelude::*, utils::HashSet};
 
-use super::{asset::BeatmapNote, ImageAssets, Rhythm, RhythmExt, NOTE_HEIGHT};
+use super::{ImageAssets, Rhythm, RhythmExt, NOTE_HEIGHT};
 
 /// A lane bundle.
 #[derive(Bundle, Default)]
@@ -46,6 +46,11 @@ impl Lane {
         }
     }
 
+    /// The lane number.
+    pub fn number(&self) -> u32 {
+        self.number
+    }
+
     /// Returns the index of the next note.
     ///
     /// This might be out of bounds!
@@ -61,7 +66,7 @@ impl Lane {
     }
 
     /// Returns an iterator of all next notes.
-    pub fn all_next_notes<'a>(&'a self) -> impl Iterator<Item = Entity> + 'a {
+    pub fn all_next_notes(&self) -> impl Iterator<Item = Entity> + '_ {
         self.notes.iter().skip(self.current_note).copied()
     }
 
@@ -82,6 +87,7 @@ impl Lane {
 
 /// The container for the lane visuals.
 #[derive(Clone, Component, Debug, Default)]
+#[allow(dead_code)]
 pub struct LaneSprite {
     count: usize,
 }

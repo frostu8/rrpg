@@ -2,32 +2,13 @@
 //!
 //! Contains abstracted input events and how to work with them.
 
-use std::time::Duration;
-
-use bevy::{
-    input::{keyboard::KeyboardInput, ButtonState},
-    prelude::*,
-};
+use bevy::prelude::*;
 
 use super::{
+    input::{KeyEvent, KeyEventType},
     note::{Lane, Note, NoteType, Slider},
     BeatmapInstance, Rhythm, RhythmExt,
 };
-
-/// Maps keyboard inputs to lanes.
-#[derive(Clone, Component, Debug, Default)]
-pub struct LaneInputKeyboard {
-    key_code: Option<KeyCode>,
-}
-
-impl LaneInputKeyboard {
-    /// Creates a new `LaneInputKeyboard`.
-    pub fn new(key_code: KeyCode) -> LaneInputKeyboard {
-        LaneInputKeyboard {
-            key_code: Some(key_code),
-        }
-    }
-}
 
 /// An event that is created for judgements.
 #[derive(Clone, Debug, Event)]
@@ -39,30 +20,6 @@ pub struct JudgementEvent {
     ///
     /// If the note was missed, this is `None`.
     pub offset: Option<f32>,
-}
-
-/// For when a key is down on a lane.
-///
-/// # Timestamps
-/// Timestamps returned by this event are based off the rhythm clock's
-/// [`RhythmExt::position`] and are adjusted for delay.
-#[derive(Clone, Debug, Event)]
-pub struct KeyEvent {
-    /// The timestamp of the event.
-    pub timestamp: Duration,
-    /// The lane this event is for.
-    pub lane: Entity,
-    /// The kind of input event.
-    pub kind: KeyEventType,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum KeyEventType {
-    /// The key changed to down on this input.
-    #[default]
-    Down,
-    /// The key changed to up on this input.
-    Up,
 }
 
 /// Triggers a judgement on a key press or key release.
@@ -103,18 +60,10 @@ pub fn create_judgements(
 
         if diff.abs() <= window_max.abs() {
             // notes and sliderbegins only want up events
-            if matches!(next_note.kind(), NoteType::Note | NoteType::SliderBegin)
-                && matches!(key.kind, KeyEventType::Down)
-            {
-                judgement_event_tx.send(JudgementEvent {
-                    note: note_entity,
-                    offset: Some(diff),
-                });
-
-                // advance note if it was hit
-                lane.advance_note();
-            } else if matches!(next_note.kind(), NoteType::SliderEnd)
-                && matches!(key.kind, KeyEventType::Up)
+            if (matches!(next_note.kind(), NoteType::Note | NoteType::SliderBegin)
+                && matches!(key.kind, KeyEventType::Down))
+                || (matches!(next_note.kind(), NoteType::SliderEnd)
+                    && matches!(key.kind, KeyEventType::Up))
             {
                 judgement_event_tx.send(JudgementEvent {
                     note: note_entity,
@@ -202,37 +151,5 @@ pub fn set_slider_down(
 
         // ...key events will contribute whether the slider is down or not
         slider.set_down(matches!(key.kind, KeyEventType::Down));
-    }
-}
-
-/// Creates input events from mapped keyboard inputs.
-pub fn create_key_events_keyboard(
-    lanes: Query<(Entity, &LaneInputKeyboard), With<Lane>>,
-    rhythm: Res<Time<Rhythm>>,
-    mut key_event_tx: EventWriter<KeyEvent>,
-    mut key_events: EventReader<KeyboardInput>,
-) {
-    for input in key_events.read() {
-        // find input for `key_code`
-        let lane = lanes
-            .iter()
-            .find(|(_, ik)| ik.key_code == Some(input.key_code));
-
-        if let Some((lane, _)) = lane {
-            let kind = match input.state {
-                ButtonState::Pressed => Some(KeyEventType::Down),
-                ButtonState::Released => Some(KeyEventType::Up),
-                _ => None,
-            };
-
-            if let Some(kind) = kind {
-                // send input event
-                key_event_tx.send(KeyEvent {
-                    timestamp: rhythm.position(),
-                    kind,
-                    lane,
-                });
-            }
-        }
     }
 }

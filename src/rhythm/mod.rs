@@ -1,6 +1,7 @@
 //! Higher level rhythm tracking.
 
 pub mod asset;
+pub mod input;
 pub mod judgement;
 pub mod note;
 pub mod render;
@@ -15,11 +16,12 @@ use std::time::Duration;
 use crate::{
     audio::{AudioControl, AudioSource},
     effect::{AnimationFrames, AnimationTimer},
-    rhythm::judgement::LaneInputKeyboard,
+    rhythm::input::LaneInputKeyboard,
     GameState,
 };
 
-pub use self::judgement::{JudgementEvent, KeyEvent};
+pub use self::input::KeyEvent;
+pub use self::judgement::JudgementEvent;
 use self::note::{NoteType, Slider, SliderRef};
 
 use asset::{Beatmap, BeatmapLoader};
@@ -50,10 +52,6 @@ impl Plugin for RhythmPlugin {
                     spawn_beatmap.run_if(in_state(GameState::InBattle)),
                     interpolate_rhythm_clock,
                 ),
-            )
-            .add_systems(
-                PreUpdate,
-                (judgement::create_key_events_keyboard,).in_set(RhythmSystem::Input),
             )
             .add_systems(
                 Update,
@@ -362,7 +360,7 @@ fn spawn_beatmap(
                             Name::new(format!("Judgement Area {}", i)),
                         ));
 
-                        spawn_notes(i, parent, beatmap, &*image_assets);
+                        spawn_notes(i, parent, beatmap, &image_assets);
                     });
             }
 

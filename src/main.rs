@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use bevy::render::camera::ScalingMode;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 
-use rrpg::rhythm::{BeatmapBundle, JudgementEvent, KeyEvent, RhythmExt, RhythmSystem};
+use rrpg::rhythm::{BeatmapBundle, JudgementEvent, KeyEvent, RhythmSystem};
 use rrpg::{GameState, RrpgPlugins};
 
 fn main() {
