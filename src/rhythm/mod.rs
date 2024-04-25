@@ -19,6 +19,7 @@ use crate::{
 };
 
 pub use self::judgement::{JudgementEvent, KeyEvent};
+use self::note::{NoteType, Slider, SliderRef};
 
 use asset::{Beatmap, BeatmapLoader};
 
@@ -56,6 +57,7 @@ impl Plugin for RhythmPlugin {
                 (
                     judgement::create_judgements,
                     judgement::create_dropped_judgements,
+                    judgement::set_slider_down,
                 )
                     .chain()
                     .in_set(RhythmSystem::Judgement)
@@ -67,6 +69,12 @@ impl Plugin for RhythmPlugin {
                     .in_set(RhythmSystem::Visual)
                     .after(RhythmSystem::Judgement)
                     .run_if(in_state(GameState::InBattle)),
+            )
+            .add_systems(
+                Update,
+                note::tick_sliders
+                    .in_set(RhythmSystem::TickSlider)
+                    .after(RhythmSystem::Judgement),
             )
             .add_systems(
                 PostUpdate,
@@ -86,6 +94,8 @@ impl Plugin for RhythmPlugin {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, SystemSet)]
 pub enum RhythmSystem {
+    /// Tick slider timers.
+    TickSlider,
     /// Spawns and does note visual effects.
     Visual,
     /// Does actual judgements.
@@ -349,26 +359,7 @@ fn spawn_beatmap(
                             Name::new(format!("Judgement Area {}", i)),
                         ));
 
-                        // spawn each note in the lane
-                        for (note_idx, note) in beatmap
-                            .notes()
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, n)| n.lane == i)
-                        {
-                            parent.spawn((
-                                SpriteBundle {
-                                    texture: image_assets.note_default.clone(),
-                                    sprite: Sprite {
-                                        color: Color::WHITE,
-                                        ..Default::default()
-                                    },
-                                    ..Default::default()
-                                },
-                                Note::from(note.clone()),
-                                Name::new(format!("Note #{}", note_idx)),
-                            ));
-                        }
+                        spawn_notes(i, parent, beatmap, &*image_assets);
                     });
             }
 
@@ -379,6 +370,70 @@ fn spawn_beatmap(
                 "spawned beatmap (song: \"{}\")",
                 beatmap.song.path.display()
             );
+        }
+    }
+}
+
+fn spawn_notes(
+    lane: u32,
+    parent: &mut ChildBuilder,
+    beatmap: &Beatmap,
+    image_assets: &ImageAssets,
+) {
+    // spawn each note in the lane
+    for (note_idx, note) in beatmap
+        .notes()
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.lane == lane)
+    {
+        if let Some(end_beat) = note.end_beat() {
+            // this is a slider!
+            // spawn end of slider
+            let end = parent
+                .spawn((
+                    SpriteBundle {
+                        texture: image_assets.note_default.clone(),
+                        sprite: Sprite {
+                            color: Color::WHITE,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    Note::new(end_beat, NoteType::SliderEnd),
+                    Slider::default(),
+                    Name::new(format!("Slider End #{}", note_idx)),
+                ))
+                .id();
+
+            // spawn start of slider
+            parent.spawn((
+                SpriteBundle {
+                    texture: image_assets.note_default.clone(),
+                    sprite: Sprite {
+                        color: Color::WHITE,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                Note::new(note.beat(), NoteType::SliderBegin),
+                SliderRef(end),
+                Name::new(format!("Slider Start #{}", note_idx)),
+            ));
+        } else {
+            // this is just a note
+            parent.spawn((
+                SpriteBundle {
+                    texture: image_assets.note_default.clone(),
+                    sprite: Sprite {
+                        color: Color::WHITE,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                Note::new(note.beat(), NoteType::Note),
+                Name::new(format!("Note #{}", note_idx)),
+            ));
         }
     }
 }

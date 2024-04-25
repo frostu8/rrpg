@@ -10,7 +10,7 @@ use bevy::{
 };
 
 use super::{
-    note::{Lane, Note},
+    note::{Lane, Note, NoteType, Slider},
     BeatmapInstance, Rhythm, RhythmExt,
 };
 
@@ -65,7 +65,7 @@ pub enum KeyEventType {
     Up,
 }
 
-/// Triggers a judgement on a key press.
+/// Triggers a judgement on a key press or key release.
 pub fn create_judgements(
     beatmaps: Query<&BeatmapInstance>,
     mut lanes: Query<(&mut Lane, &Parent)>,
@@ -75,11 +75,6 @@ pub fn create_judgements(
     rhythm: Res<Time<Rhythm>>,
 ) {
     for key in key_events.read() {
-        // filter downs for now
-        if key.kind != KeyEventType::Down {
-            continue;
-        };
-
         // find lane associated
         let Ok((mut lane, parent)) = lanes.get_mut(key.lane) else {
             continue;
@@ -107,13 +102,28 @@ pub fn create_judgements(
         let window_max = beatmap.note_window.as_secs_f32();
 
         if diff.abs() <= window_max.abs() {
-            judgement_event_tx.send(JudgementEvent {
-                note: note_entity,
-                offset: Some(diff),
-            });
+            // notes and sliderbegins only want up events
+            if matches!(next_note.kind(), NoteType::Note | NoteType::SliderBegin)
+                && matches!(key.kind, KeyEventType::Down)
+            {
+                judgement_event_tx.send(JudgementEvent {
+                    note: note_entity,
+                    offset: Some(diff),
+                });
 
-            // advance note if it was hit
-            lane.advance_note();
+                // advance note if it was hit
+                lane.advance_note();
+            } else if matches!(next_note.kind(), NoteType::SliderEnd)
+                && matches!(key.kind, KeyEventType::Up)
+            {
+                judgement_event_tx.send(JudgementEvent {
+                    note: note_entity,
+                    offset: Some(diff),
+                });
+
+                // advance note if it was hit
+                lane.advance_note();
+            }
         }
 
         // do not count input otherwise;
@@ -167,6 +177,31 @@ pub fn create_dropped_judgements(
 
         // skip all missed notes
         lane.skip_notes(last_note_idx);
+    }
+}
+
+/// Sets the down flag on the slider on inputs.
+pub fn set_slider_down(
+    lanes: Query<&Lane>,
+    mut sliders: Query<&mut Slider, With<Note>>,
+    mut key_events: EventReader<KeyEvent>,
+) {
+    for key in key_events.read() {
+        let Ok(lane) = lanes.get(key.lane) else {
+            continue;
+        };
+
+        let Some(next_note) = lane.next_note() else {
+            continue;
+        };
+
+        // if the next note is a slider...
+        let Ok(mut slider) = sliders.get_mut(next_note) else {
+            continue;
+        };
+
+        // ...key events will contribute whether the slider is down or not
+        slider.set_down(matches!(key.kind, KeyEventType::Down));
     }
 }
 

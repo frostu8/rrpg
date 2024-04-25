@@ -5,6 +5,8 @@
 //! hierarchy:
 //! * Handle<Beatmap> -> Lane -> Note
 
+use std::time::Duration;
+
 use bevy::{prelude::*, utils::HashSet};
 
 use super::{asset::BeatmapNote, ImageAssets, Rhythm, RhythmExt};
@@ -82,31 +84,105 @@ pub struct LaneSprite {
 /// Contains a copy of the note that it was created from.
 #[derive(Clone, Component, Debug)]
 pub struct Note {
-    inner: BeatmapNote,
+    beat: f32,
+    kind: NoteType,
     scroll_axis: Vec3,
 }
 
 impl Note {
+    /// Creates a new `Note` component.
+    pub fn new(beat: f32, kind: NoteType) -> Note {
+        Note {
+            beat,
+            kind,
+            ..Default::default()
+        }
+    }
+
+    /// The kind of the note.
+    ///
+    /// * [`NoteType::Note`]
+    ///   An input in the lane must be created in the window of the note for a
+    ///   judgement to pass.
+    /// * [`NoteType::SliderBegin`]  
+    ///   An input in the lane must be created in the window of the note for a
+    ///   judgement to pass. A component that tracks how long the input is down
+    ///   for in the lane is attached to the end of the slider.
+    /// * [`NoteType::SliderEnd`]  
+    ///   The tracking in the next note is compared, along with a proper
+    ///   release time on the slider.
+    pub fn kind(&self) -> NoteType {
+        self.kind
+    }
+
     /// Returns the beat this note occurs on.
     pub fn beat(&self) -> f32 {
-        self.inner.beat()
+        self.beat
     }
 }
 
 impl Default for Note {
     fn default() -> Note {
         Note {
-            inner: BeatmapNote::default(),
+            beat: 0.0,
+            kind: NoteType::Note,
             scroll_axis: Vec3::Y * 48.,
         }
     }
 }
 
-impl From<BeatmapNote> for Note {
-    fn from(inner: BeatmapNote) -> Note {
-        Note {
-            inner,
-            ..Default::default()
+/// Note type.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum NoteType {
+    /// A single note.
+    #[default]
+    Note,
+    /// A beginning to a slider.
+    SliderBegin,
+    /// An end to a slider.
+    SliderEnd,
+}
+
+/// A ref to the slider component for the full slider object.
+///
+/// This is placed on the beginning note of a slider.
+#[derive(Clone, Component, Debug)]
+pub struct SliderRef(pub Entity);
+
+/// The slider component for a note.
+///
+/// This component is attached to the "end note" of the slider.
+#[derive(Clone, Component, Debug, Default)]
+pub struct Slider {
+    duration_held: Duration,
+    down: bool,
+}
+
+impl Slider {
+    /// Whether the input on the slider is down or not.
+    pub fn down(&self) -> bool {
+        self.down
+    }
+
+    /// Sets whether an input is down on the slider.
+    ///
+    /// While the slider is down, it will automatically start counting rhythm
+    /// deltas.
+    pub fn set_down(&mut self, down: bool) {
+        self.down = down;
+    }
+
+    /// The total duration the slider was held.
+    pub fn duration_held(&self) -> Duration {
+        self.duration_held
+    }
+}
+
+/// Ticks slider down durations.
+pub fn tick_sliders(mut sliders: Query<&mut Slider>, rhythm: Res<Time<Rhythm>>) {
+    for mut slider in sliders.iter_mut() {
+        if slider.down() {
+            slider.duration_held += rhythm.delta();
         }
     }
 }
@@ -146,7 +222,7 @@ pub fn reorder_notes(
             let a = notes.get(*a).expect("note found in prev algorithm");
             let b = notes.get(*b).expect("note found in prev algorithm");
 
-            a.inner.partial_cmp(&b.inner).expect("no NaN for beat")
+            a.beat().partial_cmp(&b.beat()).expect("no NaN for beat")
         })
     }
 }
@@ -155,7 +231,7 @@ pub fn reorder_notes(
 pub fn update_note_transform(mut notes: Query<(&Note, &mut Transform)>, rhythm: Res<Time<Rhythm>>) {
     for (note, mut transform) in notes.iter_mut() {
         // get distance to
-        let dist = note.inner.beat() - rhythm.beat_number();
+        let dist = note.beat() - rhythm.beat_number();
 
         transform.translation = note.scroll_axis * dist;
     }
