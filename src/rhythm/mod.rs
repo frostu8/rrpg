@@ -155,7 +155,7 @@ pub struct BeatmapInstance {
 impl Default for BeatmapInstance {
     fn default() -> Self {
         BeatmapInstance {
-            note_window: Duration::from_millis(100),
+            note_window: Duration::from_millis(70),
         }
     }
 }
@@ -332,21 +332,30 @@ fn spawn_beatmap(
                             ..Default::default()
                         },
                         LaneInputKeyboard::new(map[i as usize]),
+                        Name::new(format!("Lane {}", i)),
                     ))
                     .set_parent(entity)
                     .with_children(|parent| {
                         // spawn judgement area
-                        parent.spawn(SpriteBundle {
-                            texture: image_assets.judgement_area.clone(),
-                            sprite: Sprite {
-                                color: Color::WHITE,
+                        parent.spawn((
+                            SpriteBundle {
+                                texture: image_assets.judgement_area.clone(),
+                                sprite: Sprite {
+                                    color: Color::WHITE,
+                                    ..Default::default()
+                                },
                                 ..Default::default()
                             },
-                            ..Default::default()
-                        });
+                            Name::new(format!("Judgement Area {}", i)),
+                        ));
 
                         // spawn each note in the lane
-                        for note in beatmap.notes().iter().filter(|n| n.lane == i) {
+                        for (note_idx, note) in beatmap
+                            .notes()
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, n)| n.lane == i)
+                        {
                             parent.spawn((
                                 SpriteBundle {
                                     texture: image_assets.note_default.clone(),
@@ -357,6 +366,7 @@ fn spawn_beatmap(
                                     ..Default::default()
                                 },
                                 Note::from(note.clone()),
+                                Name::new(format!("Note #{}", note_idx)),
                             ));
                         }
                     });

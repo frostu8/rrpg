@@ -97,7 +97,7 @@ impl Default for Note {
     fn default() -> Note {
         Note {
             inner: BeatmapNote::default(),
-            scroll_axis: Vec3::Y * 32.,
+            scroll_axis: Vec3::Y * 48.,
         }
     }
 }
