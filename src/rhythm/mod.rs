@@ -3,6 +3,7 @@
 pub mod asset;
 pub mod judgement;
 pub mod note;
+pub mod render;
 
 use bevy::prelude::*;
 use bevy::transform::TransformSystem;
@@ -27,6 +28,8 @@ use note::{Lane, LaneBundle, Note};
 
 /// The width of a single note.
 pub const NOTE_WIDTH: f32 = 16.;
+/// The height of a single note.
+pub const NOTE_HEIGHT: f32 = 8.;
 
 /// Rhythm plugin.
 pub struct RhythmPlugin;
@@ -165,7 +168,7 @@ pub struct BeatmapInstance {
 impl Default for BeatmapInstance {
     fn default() -> Self {
         BeatmapInstance {
-            note_window: Duration::from_millis(70),
+            note_window: Duration::from_millis(100),
         }
     }
 }
@@ -400,7 +403,7 @@ fn spawn_notes(
                         },
                         ..Default::default()
                     },
-                    Note::new(end_beat, NoteType::SliderEnd),
+                    Note::new(end_beat, NoteType::SliderEnd, note_idx),
                     Slider::default(),
                     Name::new(format!("Slider End #{}", note_idx)),
                 ))
@@ -416,7 +419,7 @@ fn spawn_notes(
                     },
                     ..Default::default()
                 },
-                Note::new(note.beat(), NoteType::SliderBegin),
+                Note::new(note.beat(), NoteType::SliderBegin, note_idx),
                 SliderRef(end),
                 Name::new(format!("Slider Start #{}", note_idx)),
             ));
@@ -431,7 +434,7 @@ fn spawn_notes(
                     },
                     ..Default::default()
                 },
-                Note::new(note.beat(), NoteType::Note),
+                Note::new(note.beat(), NoteType::Note, note_idx),
                 Name::new(format!("Note #{}", note_idx)),
             ));
         }

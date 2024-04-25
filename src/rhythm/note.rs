@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use bevy::{prelude::*, utils::HashSet};
 
-use super::{asset::BeatmapNote, ImageAssets, Rhythm, RhythmExt};
+use super::{asset::BeatmapNote, ImageAssets, Rhythm, RhythmExt, NOTE_HEIGHT};
 
 /// A lane bundle.
 #[derive(Bundle, Default)]
@@ -44,6 +44,13 @@ impl Lane {
             notes: Vec::with_capacity(512),
             current_note: 0,
         }
+    }
+
+    /// Returns the index of the next note.
+    ///
+    /// This might be out of bounds!
+    pub fn next_note_index(&self) -> usize {
+        self.current_note
     }
 
     /// Returns the next note, but does not increment the current note.
@@ -86,15 +93,18 @@ pub struct LaneSprite {
 pub struct Note {
     beat: f32,
     kind: NoteType,
+
+    index: usize,
     scroll_axis: Vec3,
 }
 
 impl Note {
     /// Creates a new `Note` component.
-    pub fn new(beat: f32, kind: NoteType) -> Note {
+    pub fn new(beat: f32, kind: NoteType, index: usize) -> Note {
         Note {
             beat,
             kind,
+            index,
             ..Default::default()
         }
     }
@@ -119,6 +129,11 @@ impl Note {
     pub fn beat(&self) -> f32 {
         self.beat
     }
+
+    /// Returns the index of the note in the parent [`Lane`] component.
+    pub fn index(&self) -> usize {
+        self.index
+    }
 }
 
 impl Default for Note {
@@ -126,6 +141,7 @@ impl Default for Note {
         Note {
             beat: 0.0,
             kind: NoteType::Note,
+            index: 0,
             scroll_axis: Vec3::Y * 48.,
         }
     }
@@ -148,6 +164,13 @@ pub enum NoteType {
 /// This is placed on the beginning note of a slider.
 #[derive(Clone, Component, Debug)]
 pub struct SliderRef(pub Entity);
+
+impl SliderRef {
+    /// Gets the note entity that is the end of the slider.
+    pub fn get(&self) -> Entity {
+        self.0
+    }
+}
 
 /// The slider component for a note.
 ///
@@ -190,10 +213,14 @@ pub fn tick_sliders(mut sliders: Query<&mut Slider>, rhythm: Res<Time<Rhythm>>) 
 /// Reorders the notes in a [`Lane`].
 pub fn reorder_notes(
     mut lanes: Query<(Entity, &mut Lane)>,
-    new_notes: Query<(Entity, &Parent, DebugName), Added<Note>>,
-    notes: Query<&Note>,
+    mut set: ParamSet<(
+        Query<(Entity, &Parent, DebugName), Added<Note>>,
+        Query<&mut Note>,
+    )>,
 ) {
     let mut to_sort = HashSet::<Entity>::new();
+
+    let new_notes = set.p0();
 
     for (entity, parent, name) in new_notes.iter() {
         // try and get lane
@@ -209,6 +236,8 @@ pub fn reorder_notes(
         to_sort.insert(lane_entity);
     }
 
+    let mut notes = set.p1();
+
     for entity in to_sort {
         let (_, mut lane) = lanes
             .get_mut(entity)
@@ -223,7 +252,16 @@ pub fn reorder_notes(
             let b = notes.get(*b).expect("note found in prev algorithm");
 
             a.beat().partial_cmp(&b.beat()).expect("no NaN for beat")
-        })
+        });
+
+        // update indices for notes
+        for (i, note_entity) in lane.notes.iter().copied().enumerate() {
+            let mut note = notes
+                .get_mut(note_entity)
+                .expect("note found in prev algorithm");
+
+            note.index = i;
+        }
     }
 }
 
@@ -254,8 +292,7 @@ pub fn create_lane_sprite(
 
         // spawn all lane sprites
         for i in 0..count {
-            // TODO: Magic number!!!
-            let y = i as f32 * 8.;
+            let y = i as f32 * NOTE_HEIGHT;
 
             commands
                 .spawn((

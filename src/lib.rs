@@ -20,6 +20,7 @@ impl PluginGroup for RrpgPlugins {
             .add(state::GameStatePlugin)
             .add(audio::AudioPlugin)
             .add(rhythm::RhythmPlugin)
+            .add(rhythm::render::RenderPlugin)
             .add(effect::EffectPlugin)
     }
 }
