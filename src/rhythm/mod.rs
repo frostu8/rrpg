@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use crate::{
     audio::{AudioControl, AudioSource},
+    effect::{AnimationFrames, AnimationTimer},
     rhythm::judgement::LaneInputKeyboard,
     GameState,
 };
@@ -61,6 +62,13 @@ impl Plugin for RhythmPlugin {
                     .after(RhythmSystem::Input),
             )
             .add_systems(
+                Update,
+                spawn_hit_effects
+                    .in_set(RhythmSystem::Visual)
+                    .after(RhythmSystem::Judgement)
+                    .run_if(in_state(GameState::InBattle)),
+            )
+            .add_systems(
                 PostUpdate,
                 (note::reorder_notes, note::update_note_transform)
                     .chain()
@@ -78,6 +86,8 @@ impl Plugin for RhythmPlugin {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, SystemSet)]
 pub enum RhythmSystem {
+    /// Spawns and does note visual effects.
+    Visual,
     /// Does actual judgements.
     Judgement,
     /// Create input events.
@@ -95,6 +105,10 @@ pub struct ImageAssets {
     pub note_default: Handle<Image>,
     #[asset(path = "sprites/judgement_area.png")]
     pub judgement_area: Handle<Image>,
+    #[asset(path = "sprites/judgement_hit_sheet.png")]
+    pub judgement_hit: Handle<Image>,
+    #[asset(texture_atlas_layout(tile_size_x = 24., tile_size_y = 16., columns = 5, rows = 1))]
+    pub judgement_hit_layout: Handle<TextureAtlasLayout>,
     #[asset(path = "sprites/lane_sheet.png")]
     pub lane_sheet: Handle<Image>,
     #[asset(texture_atlas_layout(tile_size_x = 16., tile_size_y = 8., columns = 2, rows = 2))]
@@ -141,7 +155,7 @@ pub struct BeatmapInstance {
 impl Default for BeatmapInstance {
     fn default() -> Self {
         BeatmapInstance {
-            note_window: Duration::from_millis(150),
+            note_window: Duration::from_millis(100),
         }
     }
 }
@@ -403,13 +417,54 @@ fn interpolate_rhythm_clock(
     }
 }
 
+/// Spawns "hit effects" after notes **hit**.
+pub fn spawn_hit_effects(
+    mut judgements: EventReader<JudgementEvent>,
+    notes: Query<&Parent, With<Note>>,
+    lanes: Query<&GlobalTransform, With<Lane>>,
+    mut commands: Commands,
+    image_assets: Res<ImageAssets>,
+) {
+    for judgement in judgements.read() {
+        if judgement.offset.is_none() {
+            // skip missed notes :(
+            continue;
+        }
+
+        // get note
+        let Ok(parent) = notes.get(judgement.note) else {
+            continue;
+        };
+
+        // get lane position
+        let Ok(lane_pos) = lanes.get(parent.get()) else {
+            continue;
+        };
+
+        // spawn hit effect **at** lane position
+        commands.spawn((
+            SpriteBundle {
+                texture: image_assets.judgement_hit.clone(),
+                transform: Transform::from_translation(lane_pos.translation()),
+                ..Default::default()
+            },
+            TextureAtlas {
+                index: 0,
+                layout: image_assets.judgement_hit_layout.clone(),
+            },
+            AnimationFrames::new(0, 5),
+            AnimationTimer::despawn_after(Duration::from_millis(125)),
+        ));
+    }
+}
+
 /// Makes notes disappear after they have been hit (or missed).
 ///
 /// This is not a system that is added automatically, the app composer should
 /// add flair as necessary.
 pub fn vanish_passed_notes(
     mut judgements: EventReader<JudgementEvent>,
-    mut notes: Query<&mut Visibility>,
+    mut notes: Query<&mut Visibility, With<Note>>,
 ) {
     for judgement in judgements.read() {
         if let Ok(mut note) = notes.get_mut(judgement.note) {

@@ -36,7 +36,7 @@ fn setup(
         ..Default::default()
     });
 
-    let beatmap = asset_server.load("beatmaps/turning_up_the_heat.ron");
+    let beatmap = asset_server.load("beatmaps/stop_breathing.ron");
 
     commands.spawn(BeatmapBundle::new(beatmap));
 

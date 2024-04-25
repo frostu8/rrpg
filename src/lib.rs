@@ -4,6 +4,7 @@
 #![allow(clippy::type_complexity)]
 
 pub mod audio;
+pub mod effect;
 pub mod rhythm;
 pub mod state;
 
@@ -19,5 +20,6 @@ impl PluginGroup for RrpgPlugins {
             .add(state::GameStatePlugin)
             .add(audio::AudioPlugin)
             .add(rhythm::RhythmPlugin)
+            .add(effect::EffectPlugin)
     }
 }
