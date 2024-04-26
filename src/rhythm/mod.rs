@@ -455,7 +455,7 @@ fn interpolate_rhythm_clock(
         } = *rhythm_ctx;
 
         // get next timestamp
-        rhythm_ctx.timestamp = ctl.sample_duration() * ctl.timestamp() as u32;
+        rhythm_ctx.timestamp = ctl.position();
 
         if rhythm_ctx.is_interpolating {
             // interpolate time on clock

@@ -1,9 +1,10 @@
 //! Custom audio solution for precise audio timings.
 
 mod asset;
+pub mod source;
 
-use asset::Decoder;
 pub use asset::{AudioLoader, AudioSource};
+use source::{OggDecoder, Resampler, Source};
 
 use bevy::prelude::*;
 
@@ -18,14 +19,11 @@ use std::{
 
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
-    Device, Sample, SampleFormat, SampleRate, Stream,
+    Device, Sample, SampleFormat, SampleRate, Stream, StreamConfig,
 };
 
-/// The default controlled sample rate.
-pub const SAMPLE_RATE: u32 = 44_100;
-
-/// The nanoseconds per sample.
-pub const NANOS_PER_SAMPLE: u64 = 1_000_000_000 / 44_100;
+/// The desired sample rate.
+pub const DEFAULT_SAMPLE_RATE: u32 = 48_000;
 
 /// The default channels of audio.
 pub const CHANNEL_COUNT: u16 = 2;
@@ -63,13 +61,14 @@ pub struct AudioBundle {
 /// large jumps in timestamp.
 #[derive(Clone, Component)]
 pub struct AudioControl {
+    sample_rate: u32,
     inner: Arc<AudioControlState>,
 }
 
 impl AudioControl {
-    /// Returns the duration for each sample.
-    pub fn sample_duration(&self) -> Duration {
-        Duration::from_nanos(NANOS_PER_SAMPLE)
+    /// Returns the song position as a [`Duration`].
+    pub fn position(&self) -> Duration {
+        Duration::from_nanos(1_000_000_000 / self.sample_rate as u64) * self.timestamp() as u32
     }
 
     /// Returns the timestamp of the audio in samples.
@@ -82,6 +81,7 @@ impl Default for AudioControl {
     /// Creates an unheaded `AudioControl`.
     fn default() -> Self {
         AudioControl {
+            sample_rate: DEFAULT_SAMPLE_RATE,
             inner: Arc::new(AudioControlState {
                 timestamp: AtomicU64::new(0),
             }),
@@ -104,33 +104,75 @@ struct AudioDevice {
 
 struct AudioState {
     _stream: Stream,
-    audio_queue: Sender<(Decoder, Arc<AudioControlState>)>,
+    streamer_options: StreamerOptions,
+    audio_queue: Sender<(OggDecoder, Arc<AudioControlState>)>,
 }
 
 impl AudioDevice {
+    /// Returns the sample rate of the audio device.
+    ///
+    /// Timestamps returned by [`AudioControl`] are sampled at this rate, so
+    /// this can be used to give an approximate timestamp in real time.
+    ///
+    /// Returns `None` if the audio device hasn't been initialized
+    pub fn sample_rate(&self) -> Option<u32> {
+        self.state.as_ref().map(|s| s.streamer_options.sample_rate)
+    }
+
     /// Initializes a cpal [`Device`] on this audio device.
     #[allow(clippy::filter_next)] // disable lint for readability
-    fn init(&mut self, device: Device) -> Result<(), String> {
+    pub fn init(&mut self, device: Device) -> Result<(), String> {
         // find configs
         let supported_configs_range = match device.supported_output_configs() {
             Ok(s) => s,
             Err(err) => return Err(format!("no configs found: {}", err)),
         };
 
-        let sample_rate = SampleRate(SAMPLE_RATE);
+        let desired_sample_rate = DEFAULT_SAMPLE_RATE;
 
-        let supported_config = supported_configs_range
+        let mut supported_configs = supported_configs_range
             .filter(|s| s.channels() == CHANNEL_COUNT)
-            .filter(|s| sample_rate >= s.min_sample_rate())
-            .filter(|s| sample_rate <= s.max_sample_rate())
             .filter(|s| s.sample_format() == SampleFormat::I16)
-            .next()
-            .expect("no supported config")
-            .with_sample_rate(sample_rate);
+            .map(|s| {
+                // score everything based on a distance from desired sample
+                // rate (44_100 or 48_000)
+                let min_sample_rate = s.min_sample_rate().0;
+                let max_sample_rate = s.max_sample_rate().0;
 
-        println!("{:?}", supported_config);
+                if desired_sample_rate < min_sample_rate {
+                    let score = min_sample_rate - desired_sample_rate;
+                    (s.with_sample_rate(SampleRate(min_sample_rate)), score)
+                } else if desired_sample_rate > max_sample_rate {
+                    let score = min_sample_rate - desired_sample_rate;
+                    (s.with_sample_rate(SampleRate(max_sample_rate)), score)
+                } else {
+                    (s.with_sample_rate(SampleRate(desired_sample_rate)), 0)
+                }
+            })
+            .collect::<Vec<_>>();
 
-        let config = supported_config.into();
+        // sort by score asc
+        supported_configs.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
+
+        info!("found audio configs:");
+
+        for config in supported_configs.iter() {
+            info!("{:?}", config);
+        }
+
+        // pull first config
+        let config = Into::<StreamConfig>::into(
+            supported_configs
+                .into_iter()
+                .next()
+                .map(|(s, _)| s)
+                .ok_or_else(|| String::from("No valid audio device config found!"))?,
+        );
+
+        let streamer_options = StreamerOptions {
+            channels: config.channels as u8,
+            sample_rate: config.sample_rate.0,
+        };
 
         let (audio_queue_tx, audio_queue_rx) = channel();
 
@@ -138,7 +180,7 @@ impl AudioDevice {
         let stream = device
             .build_output_stream(
                 &config,
-                audio_streamer(audio_queue_rx),
+                audio_streamer(streamer_options.clone(), audio_queue_rx),
                 move |err| {
                     error!("stream error: {}", err);
                 },
@@ -154,6 +196,7 @@ impl AudioDevice {
             Ok(stream) => {
                 self.state = Some(AudioState {
                     _stream: stream,
+                    streamer_options,
                     audio_queue: audio_queue_tx,
                 });
 
@@ -164,10 +207,10 @@ impl AudioDevice {
     }
 
     /// Plays audio.
-    fn play(&self, audio: AudioSource, ctl: &AudioControl) -> Result<(), lewton::VorbisError> {
+    pub fn play(&self, audio: AudioSource, ctl: &AudioControl) -> Result<(), lewton::VorbisError> {
         if let Some(state) = &self.state {
             // create decoder and state
-            let decoder = Decoder::new(audio)?;
+            let decoder = OggDecoder::new(audio)?;
             // send song over
             let _ = state.audio_queue.send((decoder, ctl.inner.clone()));
         }
@@ -176,27 +219,34 @@ impl AudioDevice {
     }
 }
 
+#[derive(Clone)]
+struct StreamerOptions {
+    sample_rate: u32,
+    channels: u8,
+}
+
 /// An event sent when the track starts.
 #[derive(Clone, Debug, Event)]
 pub struct TrackStart;
 
 fn audio_streamer(
-    audio_queue: Receiver<(Decoder, Arc<AudioControlState>)>,
+    streamer_options: StreamerOptions,
+    audio_queue: Receiver<(OggDecoder, Arc<AudioControlState>)>,
 ) -> impl FnMut(&mut [i16], &cpal::OutputCallbackInfo) + Send + 'static {
-    let mut source: Option<(Decoder, Arc<AudioControlState>)> = None;
+    let mut source: Option<(Resampler<OggDecoder>, Arc<AudioControlState>)> = None;
 
     move |data, _| {
         if let Ok((decoder, actl)) = audio_queue.try_recv() {
-            let (ident, _, _) = decoder.headers();
-
             info!(
                 "got track, c = {}, sample_rate = {}",
-                ident.audio_channels, ident.audio_sample_rate
+                decoder.channels(),
+                decoder.sample_rate(),
             );
             // reset timestamp
             actl.timestamp.store(0, Ordering::Release);
             // load source onto player
-            source = Some((decoder, actl));
+            let resampler = Resampler::new(decoder, streamer_options.sample_rate).unwrap();
+            source = Some((resampler, actl));
         }
 
         let mix_len = if let Some((decoder, actl)) = &mut source {
@@ -232,15 +282,19 @@ fn send_sound_events(
 }
 
 fn start_spawned_audio(
-    query: Query<(Entity, &Handle<AudioSource>, &AudioControl), Without<LoadedAudio>>,
+    mut query: Query<(Entity, &Handle<AudioSource>, &mut AudioControl), Without<LoadedAudio>>,
     audio_sources: Res<Assets<AudioSource>>,
     audio_device: NonSendMut<AudioDevice>,
     mut commands: Commands,
 ) {
-    for (entity, audio_source, actl) in query.iter() {
+    for (entity, audio_source, mut actl) in query.iter_mut() {
         if let Some(audio_source) = audio_sources.get(audio_source) {
+            if let Some(state) = audio_device.state.as_ref() {
+                actl.sample_rate = state.streamer_options.sample_rate;
+            }
+
             // start playing sound
-            if let Err(err) = audio_device.play(audio_source.clone(), actl) {
+            if let Err(err) = audio_device.play(audio_source.clone(), &actl) {
                 error!("Failed to play audio: {}", err);
             }
 

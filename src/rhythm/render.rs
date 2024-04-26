@@ -172,7 +172,7 @@ pub fn change_slider_length(
             let lane_baseline = lane_transform.translation() + Vec3::new(0., NOTE_HEIGHT / 2., 0.);
 
             let height = (end_note_transform.translation() - lane_baseline).length();
-            let height = height.max(0.);
+            //let height = height.max(0.);
 
             // setup slider transform
             *transform = Transform::from_xyz(0., -height / 2., slider_mesh.z_offset) // midpoint

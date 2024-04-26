@@ -22,6 +22,8 @@ bevy = { version = "0.13.2", default-features = false, features = [
 bevy-inspector-egui = { version = "0.24.0", default-features = false }
 bevy_asset_loader = { version = "0.20.1", features = ["2d"] }
 cpal = "0.15.3"
+dasp_sample = "0.11.0"
 lewton = "0.10.2"
 ron = "0.8.1"
+rubato = "0.15.0"
 serde = { version = "1.0.198", features = ["derive"] }
